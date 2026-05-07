@@ -1,16 +1,18 @@
 # ─── main.py ──────────────────────────────────────────────
 # This is the only file you run.
-# It doesn't contain logic — it just connects the modules together:
+# It connects all modules together:
 #
-#   assistant.py  →  talks to Ollama
+#   aria_ears.py  →  listens to your voice, returns text
+#   assistant.py  →  sends text to Ollama, gets reply
 #   commands.py   →  executes PC actions
 #   config.py     →  settings and prompt
 #
 # Flow:
-#   you type → assistant.py thinks → commands.py acts → print reply
+#   you speak → aria_ears hears → assistant thinks → commands act → print reply
 
 from assistant import ask_aria, build_conversation, update_memory
 from commands import execute_command
+from aria_ears import listen
 
 # ─── CONVERSATION MEMORY ──────────────────────────────────
 # This string grows as you talk.
@@ -23,15 +25,19 @@ print("Aria: oh, you're here. great.\n")
 # ─── MAIN LOOP ────────────────────────────────────────────
 while True:
     try:
-        user_input = input("You: ").strip()
+        # listen to mic instead of waiting for keyboard input
+        user_input = listen()
     except KeyboardInterrupt:
         print("\nAria: fine. leave. see if I care.")
         break
 
-    # empty input
+    # nothing heard — try again
     if not user_input:
-        print("\nAria: you typed nothing. impressive.\n")
+        print("[system]: didn't catch that. try again.\n")
         continue
+
+    # show what was heard so you can confirm it was correct
+    print(f"You: {user_input}")
 
     # exit commands
     if user_input.lower() in ["exit", "quit", "bye"]:
