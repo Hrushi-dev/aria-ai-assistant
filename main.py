@@ -13,6 +13,7 @@
 from assistant import ask_aria, build_conversation, update_memory
 from commands import execute_command
 from aria_ears import listen
+from aria_voice import speak
 
 # ─── CONVERSATION MEMORY ──────────────────────────────────
 # This string grows as you talk.
@@ -56,5 +57,9 @@ while True:
     # save Aria's reply into memory
     conversation = update_memory(conversation, reply)
 
-    # print Aria's reply
+    # print and speak Aria's reply
     print(f"\nAria: {reply}\n")
+
+    # clean reply before speaking — pyttsx3 chokes on special characters
+    clean_reply = reply.replace("*", "").replace("…", "").replace("...", "").replace("😉", "").replace("—", ",")
+    speak(clean_reply)
