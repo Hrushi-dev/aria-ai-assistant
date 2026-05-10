@@ -21,7 +21,7 @@ from faster_whisper import WhisperModel
 SAMPLE_RATE    = 16000   # 16kHz — whisper's preferred sample rate
 CHANNELS       = 1       # mono audio — one mic, one channel
 RECORD_SECONDS = 5       # how long to record each time you speak
-MODEL_SIZE     = "base"  # tiny / base / small / medium
+MODEL_SIZE     = "small"  # tiny / base / small / medium
                          # base = good balance of speed + accuracy for laptop mic
                          # tiny = fastest but misses words more often
                          # small = more accurate but slower
@@ -32,7 +32,7 @@ MODEL_SIZE     = "base"  # tiny / base / small / medium
 # compute_type="int8" means use 8-bit integers instead of 32-bit floats.
 # This cuts VRAM usage roughly in half with almost no quality loss.
 print("[ears]: loading whisper model...")
-model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")   
+model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
 print("[ears]: whisper ready.")
 
 
