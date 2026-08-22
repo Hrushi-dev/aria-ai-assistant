@@ -1,0 +1,38 @@
+# Aria AI Assistant - Core Dependencies
+
+# Core HTTP & API Clients
+requests>=2.31.0
+httpx>=0.27.0
+google-genai>=2.18.0
+python-dotenv>=1.0.0
+
+# Telegram Bot Engine
+python-telegram-bot>=21.0
+
+# Voice Processing (Whisper Speech-to-Text & Kokoro Text-to-Speech)
+faster-whisper>=1.0.0
+kokoro-onnx>=0.3.0
+onnxruntime>=1.16.0
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Terminal UI & Formatting
+rich>=13.7.0
+
+# Screenshot support (silent PIL capture — no console popup)
+pillow>=10.0.0
+
+# GUI / Cursor Automation
+pyautogui>=0.9.54
+
+# System Audio Control (Windows Core Audio API)
+pycaw>=20230407
+comtypes>=1.4.1
+
+# Document-to-PDF Conversion
+docx2pdf>=0.1.8
+reportlab>=4.2.0
+
+# Web Search Tool Integration
+duckduckgo-search>=6.0.0

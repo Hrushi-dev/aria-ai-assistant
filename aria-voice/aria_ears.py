@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # ─── aria_ears.py ─────────────────────────────────────────
 # Aria's hearing — Speech to Text.
 #
@@ -15,7 +16,17 @@ import soundfile as sf
 import numpy as np
 import tempfile
 import os
+import logging
+
+# Suppress Hugging Face warnings before importing faster_whisper
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
 from faster_whisper import WhisperModel
+from rich.console import Console
+
+console = Console()
 
 # ─── SETTINGS ─────────────────────────────────────────────
 SAMPLE_RATE    = 16000   # 16kHz — whisper's preferred sample rate
@@ -28,12 +39,10 @@ MODEL_SIZE     = "small"  # tiny / base / small / medium
 
 # ─── LOAD MODEL ONCE ──────────────────────────────────────
 # This runs when aria_ears.py is first imported.
-# "cuda" means use your RTX 3050 GPU — much faster than CPU.
-# compute_type="int8" means use 8-bit integers instead of 32-bit floats.
-# This cuts VRAM usage roughly in half with almost no quality loss.
-print("[ears]: loading whisper model...")
-model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
-print("[ears]: whisper ready.")
+console.print("[dim yellow][ears]: loading whisper model...[/dim yellow]")
+# Switched to CPU since CUDA 12 dlls are missing in this environment
+model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
+console.print("[dim green][ears]: whisper ready.[/dim green]")
 
 
 # ─── RECORD FROM MIC ──────────────────────────────────────
@@ -47,7 +56,7 @@ def record_audio() -> str:
     sounddevice.wait() blocks until recording is done.
     The result is a 2D numpy array: shape = (samples, channels)
     """
-    print(f"[ears]: listening for {RECORD_SECONDS} seconds...")
+    console.print(f"[bold red][ears]: listening for {RECORD_SECONDS} seconds...[/bold red]")
 
     # record audio — returns numpy array of shape (samples, channels)
     audio_data = sd.rec(
@@ -58,7 +67,7 @@ def record_audio() -> str:
     )
 
     sd.wait()  # block here until recording finishes
-    print("[ears]: done recording.")
+    console.print("[dim red][ears]: done recording.[/dim red]")
 
     # save to a temp file so faster-whisper can read it
     # delete=False means the file stays after we close it
@@ -100,20 +109,30 @@ def listen() -> str:
 
     Returns empty string if nothing was heard or transcription failed.
     """
+    audio_path = None
     try:
         audio_path = record_audio()
-        text = transcribe(audio_path)
+        text = transcribe(audio_path)  # transcribe() deletes the file on success
+        audio_path = None              # mark as cleaned up
 
         if text:
-            print(f"[ears]: heard → '{text}'")
+            console.print(f"[dim blue][ears]: heard → '{text}'[/dim blue]")
         else:
-            print("[ears]: heard nothing.")
+            console.print("[dim blue][ears]: heard nothing.[/dim blue]")
 
         return text
 
     except Exception as e:
-        print(f"[ears]: error — {e}")
+        console.print(f"[bold yellow][ears]: error — {e}[/bold yellow]")
         return ""
+
+    finally:
+        # BUG-07 FIX: always clean up temp file if transcribe() failed before deletion
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+            except OSError:
+                pass
 
 # ─── TEST ─────────────────────────────────────────────────
 if __name__ == "__main__":

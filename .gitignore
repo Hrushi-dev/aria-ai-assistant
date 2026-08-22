@@ -1,6 +1,42 @@
+# Python
 venv/
 __pycache__/
 *.pyc
-*.wav
-.cache/
+*.pyo
+*.pyd
+.Python
+
+# Environment & Secrets
 .env
+*.env
+
+# Audio temp files
+*.wav
+
+# Cache dirs
+.cache/
+.mypy_cache/
+.pytest_cache/
+
+# Model weights (large binary files — store separately)
+*.onnx
+*.bin
+
+# Database (runtime state, not source code)
+*.db
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# PID file (generated at runtime)
+aria.pid
