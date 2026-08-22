@@ -186,6 +186,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in whatsapp_pending:
         wa = whatsapp_pending[user_id]
         if wa["state"] in ["awaiting_body", "awaiting_correction"]:
+            if lower_text in ["cancel", "no cancel", "stop", "abort"]:
+                del whatsapp_pending[user_id]
+                await update.message.reply_text("🛑 WhatsApp draft cancelled.")
+                return
             wa["body"] = user_text
             del whatsapp_pending[user_id]
             await _send_whatsapp_approval(update, context, wa["contact"], user_text)
@@ -218,6 +222,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         autonomy_mode = (os.getenv("AUTONOMY_MODE", "0") == "1") or (memory.get_fact("autonomy_mode") == "1")
         intent = await parse_user_command(user_text, user_id=user_id, autonomy_mode=autonomy_mode)
+        
+        if not intent.get("is_complex") and not intent.get("is_chat") and not intent.get("tasks"):
+            print("[Trace] Intent parsed with empty tasks and is_chat=False. Retrying with strict enforcement.")
+            strict_prompt = user_text + "\n\nCRITICAL INSTRUCTION: You MUST return a populated 'tasks' array with a valid action. If you cannot, you MUST set 'is_chat': true and explain why."
+            intent = await parse_user_command(strict_prompt, user_id=user_id, autonomy_mode=autonomy_mode)
         memory.add_message(user_id, "user", user_text)
 
         if intent.get("is_complex"):
@@ -280,16 +289,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks      = intent.get("tasks") or []
 
         if is_chat or not tasks:
+            print(f"[Trace] Entered fallback branch. is_chat={is_chat}, len(tasks)={len(tasks)}")
             final_reply = chat_reply
             if not final_reply:
                 final_reply = "I'm listening, but I didn't quite catch what you want me to do." if not is_chat else "Hey! How can I help you today?"
+            print(f"[Trace] final_reply resolved to: {final_reply}")
 
-            if "whatsapp" in user_text.lower() and ("what" in final_reply.lower() or "message" in final_reply.lower() or "?" in final_reply):
-                wa_contact_match = re.search(
-                    r"whatsapp\s+(?:message\s+)?(?:to\s+)?([a-zA-Z0-9\s_-]+)",
-                    user_text, re.IGNORECASE
-                )
-                contact = wa_contact_match.group(1).strip() if wa_contact_match else "unknown contact"
+            if "whatsapp" in lower_text and ("what" in final_reply.lower() or "message" in final_reply.lower() or "?" in final_reply):
+                wa_llm_match = re.search(r"to\s+([a-zA-Z0-9\s_-]+)\?", final_reply, re.IGNORECASE)
+                if wa_llm_match:
+                    contact = wa_llm_match.group(1).strip()
+                else:
+                    wa_contact_match = re.search(
+                        r"(?:whatsapp|message)\s+(?:message\s+)?(?:to\s+)?([a-zA-Z0-9\s_-]+?)(?:\s+on\s+whatsapp|\s+saying|\s+hi|\s*$)",
+                        user_text, re.IGNORECASE
+                    )
+                    contact = wa_contact_match.group(1).strip() if wa_contact_match else "unknown contact"
                 whatsapp_pending[user_id] = {"contact": contact, "body": None, "state": "awaiting_body"}
 
             memory.add_message(user_id, "assistant", final_reply)
@@ -436,6 +451,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         yt_cmd = query.data.split("_", 1)[1]
         
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+            
         placeholder_msg = await query.message.reply_text(
             "⏳ <i>Aria is thinking...</i>", parse_mode=ParseMode.HTML
         )
@@ -459,7 +479,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         buff = ctypes.create_unicode_buffer(length + 1)
                         ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
                         if "youtube" in buff.value.lower():
-                            ctypes.windll.user32.ShowWindow(hwnd, 9)
+                            ctypes.windll.user32.ShowWindow(hwnd, 3)
                             ctypes.windll.user32.SetForegroundWindow(hwnd)
                             return False
                     return True

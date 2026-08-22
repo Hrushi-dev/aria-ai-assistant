@@ -23,10 +23,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import winreg
+
+def _get_shell_folder(name: str) -> Path:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+            val, _ = winreg.QueryValueEx(key, name)
+            return Path(os.path.expandvars(val)).resolve()
+    except Exception:
+        return Path.home() / name
+
 USER_HOME        = Path.home()
-DESKTOP_DIR      = USER_HOME / "Desktop"
-DOWNLOADS_DIR    = USER_HOME / "Downloads"
-DOCUMENTS_DIR    = USER_HOME / "Documents"
+DESKTOP_DIR      = _get_shell_folder("Desktop")
+DOWNLOADS_DIR    = _get_shell_folder("{374DE290-123F-4565-9164-39C4925E467B}") if not _get_shell_folder("Downloads").exists() else _get_shell_folder("Downloads")
+if not DOWNLOADS_DIR.exists():
+    DOWNLOADS_DIR = USER_HOME / "Downloads"
+DOCUMENTS_DIR    = _get_shell_folder("Personal")
 CURRENT_CORE_DIR = Path(__file__).parent.resolve()
 DEFAULT_DUMP_DIR = Path("D:/AI-AIS/aria-sandbox").resolve()
 
@@ -775,7 +787,7 @@ def execute_tool(intent: dict) -> str:
 
         elif action == "youtube_click":
             num = int(command or 1)
-            import pyautogui, time, ctypes
+            import pyautogui, ctypes
             pyautogui.FAILSAFE = False
             w, h = pyautogui.size()
             def foreach_window(hwnd, lParam):
@@ -784,15 +796,16 @@ def execute_tool(intent: dict) -> str:
                     buff = ctypes.create_unicode_buffer(length + 1)
                     ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
                     if "youtube" in buff.value.lower():
-                        ctypes.windll.user32.ShowWindow(hwnd, 9)
+                        ctypes.windll.user32.ShowWindow(hwnd, 3)
                         ctypes.windll.user32.SetForegroundWindow(hwnd)
                         return False
                 return True
             EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
             ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
-            time.sleep(0.5)
+            import time as _t
+            _t.sleep(0.5)
             pyautogui.hotkey('ctrl', 'home')
-            time.sleep(0.5)
+            _t.sleep(0.5)
             
             global youtube_picker_targets
             if num in youtube_picker_targets:
@@ -833,6 +846,21 @@ def execute_tool(intent: dict) -> str:
 
         elif action == "list_files":
             target = resolve_target(target_str or command)
+            search_query = file_name or folder_name
+            if not search_query and command and command != target_str:
+                search_query = command
+                
+            if search_query:
+                # User is asking "is there a file named X"
+                if not target.exists() or not target.is_dir():
+                    target = DESKTOP_DIR
+                if target.exists() and target.is_dir():
+                    s_lower = search_query.lower()
+                    matches = [i for i in os.listdir(target) if s_lower in i.lower()]
+                    if not matches:
+                        return f"⚠️ No file named '{search_query}' was found in {target}."
+                    return f"🔍 Found matching items in {target}:\n" + "\n".join(f"- {i}" for i in matches[:35])
+            
             if not target.exists():
                 return f"Path does not exist: {target}"
             if not target.is_dir():
@@ -865,9 +893,41 @@ def execute_tool(intent: dict) -> str:
             sources = intent.get("source_paths") or []
             if isinstance(sources, str):
                 sources = [s.strip() for s in sources.split(",") if s.strip()]
-            sources = [_sanitise_path(s) for s in sources]
+            
+            matched_sources = []
+            base_dir = resolve_target(target_str) if target_str else DESKTOP_DIR
+            
+            if not sources and command:
+                sources = [command]
+            elif not sources and target_str:
+                resolved_target = resolve_target(target_str)
+                if resolved_target.exists():
+                    sources = [str(resolved_target)]
+                    target_str = None
+            elif not sources and folder_name:
+                sources = [folder_name]
+                
+            for s in sources:
+                p = Path(_sanitise_path(s))
+                if p.exists():
+                    matched_sources.append(str(p))
+                    continue
+                # Fuzzy match in base_dir
+                if base_dir.exists() and base_dir.is_dir():
+                    found = False
+                    s_lower = s.lower()
+                    for item in os.listdir(base_dir):
+                        if s_lower in item.lower():
+                            matched_sources.append(str(base_dir / item))
+                            found = True
+                            break
+                    if not found:
+                        return f"⚠️ No file or folder found matching '{s}' in {base_dir}"
+                else:
+                    return f"⚠️ No file or folder found matching '{s}'"
+            
             archive_name = intent.get("file_name") or intent.get("command") or "aria_archive"
-            return create_zip_archive(sources, archive_name, target_str)
+            return create_zip_archive(matched_sources, archive_name, target_str)
 
         elif action == "volume_control":
             vol_action = (intent.get("command") or "up").lower()

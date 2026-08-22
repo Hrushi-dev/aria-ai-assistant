@@ -24,9 +24,7 @@ API_KEYS = [
 API_KEYS = [k for k in API_KEYS if k]
 
 MODELS_POOL = [
-    "models/gemini-3.1-flash-lite",
-    "models/gemini-3.1-flash-lite-preview",
-    "models/gemini-3-flash-preview",
+    "gemini-3.6-flash",
 ]
 
 LOCAL_MODEL = "qwen2.5:7b"
@@ -63,7 +61,7 @@ ABSOLUTE RULES — never violate:
 12. "volume up/down/mute/set X%" → action: "volume_control", command: "up"|"down"|"mute"|"unmute"|"set", summary: "50" (level as string).
 13. "zip/compress/archive" → action: "create_zip", source_paths: comma-separated paths, file_name: archive name.
 14. "convert to pdf", "make pdf" → action: "convert_to_pdf", target_path: source file path.
-15. If the user asks to send a WhatsApp message but DOES NOT provide the message body, you MUST return is_chat: true and ask what the message should say. Do NOT execute the whatsapp_message action.
+15. If the user asks to send a WhatsApp message but DOES NOT provide the message body, you MUST return is_chat: true and ask what the message should say. If they DO provide the body, return action "whatsapp_message", set "command" to the contact name, and "file_content" to the message body.
 16. "click at X Y" or "click on [element]" → action: "gui_click", command: "X Y" (coords as string).
 17. "play", "pause", "next", "prev", "stop" alone → action: "media_control", command: the word itself.
 18. "minimize", "show desktop", "minimize all" → action: "minimize_all"
@@ -114,6 +112,9 @@ User: "convert report.docx to pdf"
 
 User: "send whatsapp to mummy"
 {{"is_chat": true, "chat_reply": "Sure! What message would you like to send to Mummy?", "tasks": []}}
+
+User: "Message Mummy on WhatsApp Hi"
+{{"is_chat": false, "chat_reply": null, "tasks": [{{"action": "whatsapp_message", "target_path": null, "folder_name": null, "file_name": null, "file_content": "Hi", "command": "Mummy", "summary": "Send WhatsApp to Mummy", "risk_level": "LOW"}}]}}
 
 User: "write me a python hello world"
 {{"is_chat": true, "chat_reply": "Here you go!\\n```python\\nprint('Hello, World!')\\n```", "tasks": []}}
@@ -178,9 +179,13 @@ def _sanitise_raw_json(text: str) -> str:
 
 def clean_json_response(raw_text: str) -> dict:
     text = raw_text.strip()
+    print(f"[Trace] RAW LLM OUTPUT:\n{text}\n")
     try:
-        return json.loads(_sanitise_raw_json(text))
-    except json.JSONDecodeError:
+        parsed = json.loads(_sanitise_raw_json(text))
+        print(f"[Trace] clean_json_response: successfully parsed via json.loads: {parsed}")
+        return parsed
+    except json.JSONDecodeError as e:
+        print(f"[Trace] clean_json_response: json.loads failed: {e}")
         pass
 
     # Fallback: Regex extract fields to prevent raw JSON dump
@@ -226,8 +231,10 @@ def clean_json_response(raw_text: str) -> dict:
 
     clean = re.sub(r"^\s*(```json?|```)\s*|\s*(```)\s*$", "", text, flags=re.MULTILINE).strip()
     if clean:
+        print("[Trace] clean_json_response: returning fallback chat_reply from clean text")
         return {"is_chat": True, "chat_reply": clean, "tasks": []}
 
+    print("[Trace] clean_json_response: returning absolute fallback error")
     return {"is_chat": True, "chat_reply": "⚠️ I had trouble forming a response. Please try again.", "tasks": []}
 
 
@@ -403,7 +410,7 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
             yt_q = m2.group(1).strip()
             return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "play_youtube", "command": yt_q, "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"YouTube: {yt_q}", "risk_level": "LOW"}]}
     elif "youtube" in lower and any(k in lower for k in ["play", "search", "open", "watch"]):
-        yt_q = re.sub(r"(?:play|search|open|watch|on\s+youtube|youtube)", "", lower, flags=re.IGNORECASE).strip()
+        yt_q = re.sub(r"(?:play|search|open|watch|on\s+youtube|in\s+youtube|youtube)", "", lower, flags=re.IGNORECASE).strip()
         if yt_q:
             return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "play_youtube", "command": yt_q, "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"YouTube: {yt_q}", "risk_level": "LOW"}]}
 
@@ -579,4 +586,5 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
             "risk_level":  res.get("risk_level", "LOW")
         }] if action_val and action_val not in [None, "null", "none"] else []
 
+    print(f"[Trace] parse_user_command returning: {res}")
     return res
