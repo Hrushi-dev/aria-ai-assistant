@@ -175,6 +175,15 @@ def close_window_or_tab(target_query: str) -> str:
 def launch_app_or_protocol(app_name: str) -> str:
     clean_app = re.sub(r"^(open|launch|start|run)\s+", "", app_name, flags=re.IGNORECASE).strip().lower()
 
+    # Try resolving it as a folder first (e.g., 'open the folder DOWNLOADS')
+    try:
+        resolved = resolve_target(clean_app)
+        if resolved.exists() and resolved.is_dir():
+            os.startfile(str(resolved))
+            return f"📁 Opened folder: {resolved.name}"
+    except Exception:
+        pass
+
     protocol_map = {
         "whatsapp":   "whatsapp:",
         "spotify":    "spotify:",
@@ -188,13 +197,25 @@ def launch_app_or_protocol(app_name: str) -> str:
         "photos":     "ms-photos:",
         "paint":      "mspaint.exe",
         "terminal":   "wt.exe",
-        "cmd":        "cmd.exe"
+        "cmd":        "cmd.exe",
+        "chrome":     "start chrome",
+        "opera":      "start opera",
+        "brave":      "start brave",
+        "edge":       "start msedge",
+        "firefox":    "start firefox"
     }
 
     target = protocol_map.get(clean_app, clean_app)
     try:
-        if ":" in target and not Path(target).exists():
+        if re.match(r"^[a-zA-Z0-9-]+:", target) and not Path(target).exists() and not target.startswith("explorer.exe"):
             os.startfile(target)
+        elif target.startswith("explorer.exe "):
+            path_part = target[13:].strip().strip("'\"")
+            resolved_path = resolve_target(path_part)
+            if resolved_path.exists():
+                os.startfile(str(resolved_path))
+            else:
+                subprocess.Popen(target, shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
         else:
             subprocess.Popen(
                 target, shell=True,
@@ -307,26 +328,56 @@ def create_zip_archive(source_paths: list[str], archive_name: str, dest_dir: str
     zip_path = dest / archive_name
 
     added, skipped = [], []
+    import tempfile
+    import uuid
+    import shutil
+    
+    # Write to a non-synced scratch location first
+    temp_zip_path = DEFAULT_DUMP_DIR / f"temp_{uuid.uuid4().hex}.zip"
+    DEFAULT_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+    
     try:
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(temp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for sp in source_paths:
                 p = Path(_sanitise_path(sp.strip()))
                 if not p.exists():
                     skipped.append(str(p))
                     continue
                 if p.is_dir():
-                    for f in p.rglob("*"):
-                        if f.is_file():
-                            zf.write(f, f.relative_to(p.parent))
-                            added.append(f.name)
+                    for root, dirs, files in os.walk(p):
+                        for file in files:
+                            file_path = Path(root) / file
+                            arcname = file_path.relative_to(p.parent)
+                            zf.write(file_path, arcname)
+                            added.append(file_path.name)
                 else:
                     zf.write(p, p.name)
                     added.append(p.name)
+                    
+        # Verify it's a valid zip before reporting success
+        if not zipfile.is_zipfile(temp_zip_path):
+            raise ValueError("Created archive is corrupted or not a valid zip file.")
+            
+        # Move it to the final live/synced destination only after it's closed and verified
+        shutil.move(str(temp_zip_path), str(zip_path))
+        
+        sandbox_copy = DEFAULT_DUMP_DIR / archive_name
+        if str(zip_path.resolve()) != str(sandbox_copy.resolve()):
+            shutil.copy2(str(zip_path), str(sandbox_copy))
+            send_path = sandbox_copy
+        else:
+            send_path = zip_path
+            
     except Exception as e:
+        if temp_zip_path.exists():
+            try:
+                temp_zip_path.unlink()
+            except:
+                pass
         return f"⚠️ ZIP creation failed: {e}"
 
     note = f" | Skipped: {', '.join(skipped)}" if skipped else ""
-    return f"SENDFILE:{zip_path}|📦 Archive: {zip_path.name} ({len(added)} files){note}"
+    return f"SENDFILE:{send_path}|📦 Archive: {zip_path.name} ({len(added)} files){note}"
 
 
 # ─── System volume control via pycaw ────────────────────────────────
@@ -507,21 +558,25 @@ def gui_click(x: int | None = None, y: int | None = None,
               window_title: str | None = None, element_text: str | None = None) -> str:
     try:
         import pyautogui
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE    = 0.1
+        old_fs = pyautogui.FAILSAFE
+        pyautogui.FAILSAFE = False
+        try:
+            pyautogui.PAUSE    = 0.1
 
-        if x is not None and y is not None:
-            pyautogui.click(x, y)
-            return f"🖱️ Clicked at ({x}, {y})."
+            if x is not None and y is not None:
+                pyautogui.click(x, y)
+                return f"🖱️ Clicked at ({x}, {y})."
 
-        if element_text:
-            loc = pyautogui.locateOnScreen(element_text, confidence=0.8)
-            if loc:
-                pyautogui.click(loc)
-                return f"🖱️ Clicked element matching '{element_text}'."
-            return f"⚠️ Could not locate '{element_text}' on screen."
+            if element_text:
+                loc = pyautogui.locateOnScreen(element_text, confidence=0.8)
+                if loc:
+                    pyautogui.click(loc)
+                    return f"🖱️ Clicked element matching '{element_text}'."
+                return f"⚠️ Could not locate '{element_text}' on screen."
 
-        return "⚠️ Provide coordinates (x, y) or element_text for GUI click."
+            return "⚠️ Provide coordinates (x, y) or element_text for GUI click."
+        finally:
+            pyautogui.FAILSAFE = old_fs
     except ImportError:
         return "⚠️ pyautogui not installed. Run: pip install pyautogui"
     except Exception as e:
@@ -610,15 +665,19 @@ def browser_scroll_and_screenshot() -> str:
 
     try:
         import pyautogui
+        old_fs = pyautogui.FAILSAFE
         pyautogui.FAILSAFE = False
-        w, h = pyautogui.size()
-        pyautogui.moveTo(w // 2, h // 2, duration=0.2)
-        pyautogui.click()
-        time.sleep(0.5)
-        pyautogui.scroll(-800)
-        time.sleep(1.2)
-        img = pyautogui.screenshot()
-        img.save(str(shot_path))
+        try:
+            w, h = pyautogui.size()
+            pyautogui.moveTo(w // 2, h // 2, duration=0.2)
+            pyautogui.click()
+            time.sleep(0.5)
+            pyautogui.scroll(-800)
+            time.sleep(1.2)
+            img = pyautogui.screenshot()
+            img.save(str(shot_path))
+        finally:
+            pyautogui.FAILSAFE = old_fs
     except Exception:
         try:
             VK_NEXT = 0x22
@@ -788,35 +847,39 @@ def execute_tool(intent: dict) -> str:
         elif action == "youtube_click":
             num = int(command or 1)
             import pyautogui, ctypes
+            old_fs = pyautogui.FAILSAFE
             pyautogui.FAILSAFE = False
-            w, h = pyautogui.size()
-            def foreach_window(hwnd, lParam):
-                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buff = ctypes.create_unicode_buffer(length + 1)
-                    ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-                    if "youtube" in buff.value.lower():
-                        ctypes.windll.user32.ShowWindow(hwnd, 3)
-                        ctypes.windll.user32.SetForegroundWindow(hwnd)
-                        return False
-                return True
-            EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
-            ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
-            import time as _t
-            _t.sleep(0.5)
-            pyautogui.hotkey('ctrl', 'home')
-            _t.sleep(0.5)
-            
-            global youtube_picker_targets
-            if num in youtube_picker_targets:
-                x, y = youtube_picker_targets[num]
-            else:
-                x = int(w * 0.4)
-                y = int(h * (0.35 + (num - 1) * 0.22))
+            try:
+                w, h = pyautogui.size()
+                def foreach_window(hwnd, lParam):
+                    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buff = ctypes.create_unicode_buffer(length + 1)
+                        ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                        if "youtube" in buff.value.lower():
+                            ctypes.windll.user32.ShowWindow(hwnd, 3)
+                            ctypes.windll.user32.SetForegroundWindow(hwnd)
+                            return False
+                    return True
+                EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+                ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
+                import time as _t
+                _t.sleep(0.5)
+                pyautogui.hotkey('ctrl', 'home')
+                _t.sleep(0.5)
                 
-            pyautogui.moveTo(x, y, duration=0.4)
-            pyautogui.click()
-            return f"▶️ Playing video #{num}."
+                global youtube_picker_targets
+                if num in youtube_picker_targets:
+                    x, y = youtube_picker_targets[num]
+                else:
+                    x = int(w * 0.4)
+                    y = int(h * (0.35 + (num - 1) * 0.22))
+                    
+                pyautogui.moveTo(x, y, duration=0.4)
+                pyautogui.click()
+                return f"▶️ Playing video #{num}."
+            finally:
+                pyautogui.FAILSAFE = old_fs
 
         elif action == "play_spotify":
             return play_spotify_with_autoplay(command or "")
@@ -904,25 +967,39 @@ def execute_tool(intent: dict) -> str:
                 if resolved_target.exists():
                     sources = [str(resolved_target)]
                     target_str = None
+                else:
+                    sources = [target_str]
+                    target_str = None
             elif not sources and folder_name:
                 sources = [folder_name]
                 
             for s in sources:
                 p = Path(_sanitise_path(s))
+                
+                if target_str and not p.is_absolute():
+                    test_p = base_dir / s
+                    if test_p.exists():
+                        p = test_p
+
+                if not p.is_absolute():
+                    p = resolve_target(s)
+                    
                 if p.exists():
                     matched_sources.append(str(p))
                     continue
-                # Fuzzy match in base_dir
-                if base_dir.exists() and base_dir.is_dir():
+                
+                # Fuzzy match in parent directory
+                parent_dir = p.parent
+                if parent_dir.exists() and parent_dir.is_dir():
                     found = False
-                    s_lower = s.lower()
-                    for item in os.listdir(base_dir):
-                        if s_lower in item.lower():
-                            matched_sources.append(str(base_dir / item))
+                    s_lower = p.name.lower()
+                    for item in os.listdir(parent_dir):
+                        if s_lower in item.lower() or item.lower() in s_lower:
+                            matched_sources.append(str(parent_dir / item))
                             found = True
                             break
                     if not found:
-                        return f"⚠️ No file or folder found matching '{s}' in {base_dir}"
+                        return f"⚠️ No file or folder found matching '{p.name}' in {parent_dir}"
                 else:
                     return f"⚠️ No file or folder found matching '{s}'"
             
@@ -969,20 +1046,32 @@ def execute_tool(intent: dict) -> str:
             cmd_lower = (command or "toggle").lower()
             if cmd_lower == "close":
                 import pyautogui
+                old_fs = pyautogui.FAILSAFE
                 pyautogui.FAILSAFE = False
-                pyautogui.hotkey("alt", "f4")
-                return "🛑 Closed media window."
+                try:
+                    pyautogui.hotkey("alt", "f4")
+                    return "🛑 Closed media window."
+                finally:
+                    pyautogui.FAILSAFE = old_fs
                 
             if cmd_lower == "seekf":
                 import pyautogui
+                old_fs = pyautogui.FAILSAFE
                 pyautogui.FAILSAFE = False
-                pyautogui.press("right")
-                return "⏩ Seek forward."
+                try:
+                    pyautogui.press("right")
+                    return "⏩ Seek forward."
+                finally:
+                    pyautogui.FAILSAFE = old_fs
             if cmd_lower == "seekb":
                 import pyautogui
+                old_fs = pyautogui.FAILSAFE
                 pyautogui.FAILSAFE = False
-                pyautogui.press("left")
-                return "⏪ Seek backward."
+                try:
+                    pyautogui.press("left")
+                    return "⏪ Seek backward."
+                finally:
+                    pyautogui.FAILSAFE = old_fs
 
             _VK = {
                 "play":  0xB3, "pause": 0xB3, "toggle": 0xB3,
@@ -1049,10 +1138,18 @@ def _wrap_result(raw_result: str) -> dict:
         "artifacts": artifacts,
     }
 
-def execute_tool_structured(intent: dict) -> dict:
+async def execute_tool_structured(intent: dict) -> dict:
     """Parallel entry point that guarantees a structured dictionary return."""
     try:
-        raw = execute_tool(intent)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        
+        # Check if we are already in an executor or synchronous context without a running loop
+        if not loop.is_running():
+            raw = execute_tool(intent)
+        else:
+            raw = await loop.run_in_executor(None, execute_tool, intent)
+                
         return _wrap_result(raw)
     except Exception as e:
         return {

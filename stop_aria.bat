@@ -2,6 +2,9 @@
 :: ── Kill ALL Aria processes ───────────────────────────────────────────────────
 powershell -WindowStyle Hidden -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Stop-Process -Force"
 
+:: ── Stop Telegram Local API ────────────────────────────────────────────────────
+docker stop aria-tg-api >nul 2>&1
+
 :: ── Show Windows toast notification ──────────────────────────────────────────
 powershell -WindowStyle Hidden -Command ^
   "Add-Type -AssemblyName System.Windows.Forms; ^

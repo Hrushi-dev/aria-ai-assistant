@@ -66,11 +66,29 @@ async def _send_result(context, chat_id: int, message_id: int, result: str):
         file_path  = parts[0].strip()
         caption    = parts[1].strip() if len(parts) > 1 else "📦 File ready."
         try:
-            with open(file_path, "rb") as f:
-                await context.bot.send_document(
-                    chat_id=chat_id, document=f, caption=caption
+            file_size = os.path.getsize(file_path)
+            is_local = bool(os.getenv("TELEGRAM_LOCAL_SERVER") or os.getenv("TELEGRAM_LOCAL_API_URL"))
+            max_size = 2000 * 1024 * 1024 if is_local else 50 * 1024 * 1024
+            if file_size > max_size:
+                msg = f"{caption}\n\n⚠️ File created but is too large to send via Telegram ({file_size / (1024*1024):.1f} MB).\nSaved locally at: {file_path}"
+                await context.bot.edit_message_text(
+                    msg, chat_id=chat_id, message_id=message_id
                 )
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            else:
+                if is_local and "aria-sandbox" in file_path:
+                    fname = os.path.basename(file_path)
+                    container_uri = f"file:///mnt/aria-sandbox/{fname}"
+                    await context.bot.send_document(
+                        chat_id=chat_id, document=container_uri, caption=caption,
+                        read_timeout=3600, write_timeout=3600
+                    )
+                else:
+                    with open(file_path, "rb") as f:
+                        await context.bot.send_document(
+                            chat_id=chat_id, document=f, caption=caption,
+                            read_timeout=3600, write_timeout=3600
+                        )
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception as e:
             await context.bot.edit_message_text(
                 f"⚠️ File created but could not send: {e}\nSaved at: {file_path}",
@@ -471,33 +489,37 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             def yt_click_macro(num: int):
                 import pyautogui, time as _t, ctypes
                 from tool_executor import youtube_picker_targets
+                old_fs = pyautogui.FAILSAFE
                 pyautogui.FAILSAFE = False
-                w, h = pyautogui.size()
-                def foreach_window(hwnd, lParam):
-                    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        buff = ctypes.create_unicode_buffer(length + 1)
-                        ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-                        if "youtube" in buff.value.lower():
-                            ctypes.windll.user32.ShowWindow(hwnd, 3)
-                            ctypes.windll.user32.SetForegroundWindow(hwnd)
-                            return False
-                    return True
-                EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
-                ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
-                _t.sleep(0.5)
-                pyautogui.hotkey('ctrl', 'home')
-                _t.sleep(0.5)
-                
-                if num in youtube_picker_targets:
-                    x, y = youtube_picker_targets[num]
-                else:
-                    x = int(w * 0.4)
-                    y = int(h * (0.35 + (num - 1) * 0.22))
+                try:
+                    w, h = pyautogui.size()
+                    def foreach_window(hwnd, lParam):
+                        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                        if length > 0:
+                            buff = ctypes.create_unicode_buffer(length + 1)
+                            ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                            if "youtube" in buff.value.lower():
+                                ctypes.windll.user32.ShowWindow(hwnd, 3)
+                                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                                return False
+                        return True
+                    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+                    ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
+                    _t.sleep(0.5)
+                    pyautogui.hotkey('ctrl', 'home')
+                    _t.sleep(0.5)
                     
-                pyautogui.moveTo(x, y, duration=0.4)
-                pyautogui.click()
-                return f"▶️ Playing video #{num}."
+                    if num in youtube_picker_targets:
+                        x, y = youtube_picker_targets[num]
+                    else:
+                        x = int(w * 0.4)
+                        y = int(h * (0.35 + (num - 1) * 0.22))
+                        
+                    pyautogui.moveTo(x, y, duration=0.4)
+                    pyautogui.click()
+                    return f"▶️ Playing video #{num}."
+                finally:
+                    pyautogui.FAILSAFE = old_fs
 
             num = int(yt_cmd)
             result = await asyncio.get_running_loop().run_in_executor(
@@ -589,8 +611,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_path  = parts2[0].strip()
             caption    = parts2[1].strip() if len(parts2) > 1 else "📦 File ready."
             try:
-                with open(file_path, "rb") as f:
-                    await query.message.reply_document(document=f, caption=caption)
+                file_size = os.path.getsize(file_path)
+                is_local = bool(os.getenv("TELEGRAM_LOCAL_SERVER") or os.getenv("TELEGRAM_LOCAL_API_URL"))
+                max_size = 2000 * 1024 * 1024 if is_local else 50 * 1024 * 1024
+                if file_size > max_size:
+                    await query.message.reply_text(
+                        f"{caption}\n\n⚠️ File created but is too large to send via Telegram ({file_size / (1024*1024):.1f} MB).\nSaved locally at: {file_path}"
+                    )
+                else:
+                    if is_local and "aria-sandbox" in file_path:
+                        fname = os.path.basename(file_path)
+                        container_uri = f"file:///mnt/aria-sandbox/{fname}"
+                        await query.message.reply_document(document=container_uri, caption=caption, read_timeout=3600, write_timeout=3600)
+                    else:
+                        with open(file_path, "rb") as f:
+                            await query.message.reply_document(document=f, caption=caption, read_timeout=3600, write_timeout=3600)
             except Exception as e:
                 await query.message.reply_text(f"⚠️ Could not send file: {e}")
         else:
@@ -620,13 +655,19 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == "__main__":
+    builder = ApplicationBuilder().token(BOT_TOKEN)
+    local_api = os.getenv("TELEGRAM_LOCAL_SERVER") or os.getenv("TELEGRAM_LOCAL_API_URL")
+    if local_api:
+        # Strip trailing /bot or / just in case
+        clean_url = local_api.replace("/bot", "").rstrip("/")
+        builder = builder.base_url(f"{clean_url}/bot").base_file_url(f"{clean_url}/file/bot").local_mode(True)
+        
     app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .read_timeout(30)
-        .write_timeout(30)
-        .connect_timeout(30)
-        .pool_timeout(30)
+        builder
+        .read_timeout(60)
+        .write_timeout(60)
+        .connect_timeout(60)
+        .pool_timeout(60)
         .build()
     )
     app.add_handler(CommandHandler("start", start))

@@ -236,7 +236,7 @@ sys.addaudithook(sandbox_audit_hook)
                             result["stdout"] = fallback_warning
             else:
 
-                result = execute_tool_structured(intent)
+                result = await execute_tool_structured(intent)
             
             log_entry = {
                 "goal_id": goal_id,

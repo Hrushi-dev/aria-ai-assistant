@@ -64,8 +64,9 @@ ABSOLUTE RULES — never violate:
 15. If the user asks to send a WhatsApp message but DOES NOT provide the message body, you MUST return is_chat: true and ask what the message should say. If they DO provide the body, return action "whatsapp_message", set "command" to the contact name, and "file_content" to the message body.
 16. "click at X Y" or "click on [element]" → action: "gui_click", command: "X Y" (coords as string).
 17. "play", "pause", "next", "prev", "stop" alone → action: "media_control", command: the word itself.
-18. "minimize", "show desktop", "minimize all" → action: "minimize_all"
-19. If user specifies a location (e.g., "desktop", "downloads"), set target_path to that string EXACTLY (e.g. "desktop").
+68. "minimize", "show desktop", "minimize all" → action: "minimize_all"
+69. If user specifies a location (e.g., "desktop", "downloads"), set target_path to that string EXACTLY (e.g. "desktop").
+70. MULTI-TURN CONTEXT: When executing a task after asking a clarification question (e.g., user answers "which folder?"), you MUST reconstruct the entire task JSON including ALL original context (e.g., target_path, folder_name, action) from the previous turns in the new task.
 
 ALLOWED ACTIONS:
 create_file_folder | delete_folder | delete_file | close_window | open_app | minimize_all |

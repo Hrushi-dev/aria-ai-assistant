@@ -3,6 +3,9 @@
 powershell -WindowStyle Hidden -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Stop-Process -Force"
 timeout /t 4 /nobreak >nul
 
+:: ── Ensure Telegram Local API is running ─────────────────────────────────────
+docker start aria-tg-api >nul 2>&1
+
 :: ── Start exactly ONE Aria instance silently ─────────────────────────────────
 start "" /B "D:\AI-AIS\aria-core\venv\Scripts\pythonw.exe" "D:\AI-AIS\aria-core\main_daemon.py"
 
