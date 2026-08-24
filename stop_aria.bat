@@ -1,6 +1,6 @@
 @echo off
 :: ── Kill ALL Aria processes ───────────────────────────────────────────────────
-powershell -WindowStyle Hidden -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Stop-Process -Force"
+powershell -WindowStyle Hidden -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'main_daemon.py' } | Invoke-CimMethod -MethodName Terminate"
 
 :: ── Stop Telegram Local API ────────────────────────────────────────────────────
 docker stop aria-tg-api >nul 2>&1

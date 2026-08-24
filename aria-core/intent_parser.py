@@ -398,6 +398,10 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
     if m:
         return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "close_window", "command": m.group(1).strip(), "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"Close {m.group(1).strip()}", "risk_level": "LOW"}]}
 
+    # ── Fast-Path: Web Builder ────────────────────────────────────────────
+    if any(k in lower for k in ["make me a webpage", "create a website", "build a webpage", "build a website", "make a website", "create a webpage", "make a web page", "create a web page"]):
+        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "start_web_builder", "risk_level": "LOW", "summary": "Start adaptive web builder flow"}]}
+
     # ── Fast-Path: Web Search ─────────────────────────────────────────────
     m = re.match(r"(?:search(?:\s+for)?|google|look up)\s+(.+)", lower)
     if m:

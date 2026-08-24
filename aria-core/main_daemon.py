@@ -17,6 +17,9 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+import json
+import router
+from antigravity_orchestrator import run_orchestration
 from intent_parser import parse_user_command
 from tool_executor import execute_tool
 import memory_store as memory
@@ -38,6 +41,52 @@ except (ValueError, TypeError):
 
 pending_approvals: dict[str, dict] = {}
 whatsapp_pending: dict[int, dict] = {}
+webpage_pending: dict[int, dict] = {}
+
+WEB_BUILDER_PROMPT = """You are Aria's Website Builder Brain.
+The user wants to build a website. They will describe what they want.
+Extract the following information from their description:
+- type: (e.g. portfolio, blog, store, brand site, unknown)
+- name: (name or title of the site, or unknown)
+- style: (color theme, tone, aesthetics, or unknown)
+- sections: (any specific pages, sections, or content mentioned, or unknown)
+
+If they mention new details, update the existing details.
+Output ONLY JSON in the following format:
+{
+  "type": "...",
+  "name": "...",
+  "style": "...",
+  "sections": "..."
+}
+"""
+
+def determine_next_question(state):
+    """Determine what to ask next based on missing info."""
+    if state["type"] == "unknown":
+        return "What kind of website are we building? (e.g. portfolio, blog, store, brand site)"
+    
+    if state["name"] == "unknown":
+        if state["type"] == "portfolio":
+            return "What's your name or the name for this portfolio?"
+        elif state["type"] == "store":
+            return "What's the name of your store, and what are you selling?"
+        else:
+            return "What is the name of this website or brand?"
+
+    if state["style"] == "unknown":
+        return "Do you have any preferences for colors, vibe, or style? (e.g. dark mode, minimalist, neon, etc.)"
+
+    if state["sections"] == "unknown":
+        if state["type"] == "portfolio":
+            return "What kind of work are you showcasing, and roughly how many projects?"
+        elif state["type"] == "store":
+            return "Are there any specific product categories or sections you want on the homepage?"
+        else:
+            return "Any specific sections or features you must have on this site?"
+            
+    return None
+
 
 _MAX_TG_LEN = 4096
 
@@ -62,9 +111,14 @@ async def _send_result(context, chat_id: int, message_id: int, result: str):
                 chat_id=chat_id, message_id=message_id
             )
     elif isinstance(result, str) and result.startswith("SENDFILE:"):
-        parts      = result.split("SENDFILE:", 1)[1].split("|", 1)
+        parts      = result.split("SENDFILE:", 1)[1].split("|")
         file_path  = parts[0].strip()
         caption    = parts[1].strip() if len(parts) > 1 else "📦 File ready."
+        screenshot_path = None
+        for p in parts[2:]:
+            if p.strip().startswith("SCREENSHOT:"):
+                screenshot_path = p.strip().split("SCREENSHOT:", 1)[1].strip()
+                
         try:
             file_size = os.path.getsize(file_path)
             is_local = bool(os.getenv("TELEGRAM_LOCAL_SERVER") or os.getenv("TELEGRAM_LOCAL_API_URL"))
@@ -75,6 +129,13 @@ async def _send_result(context, chat_id: int, message_id: int, result: str):
                     msg, chat_id=chat_id, message_id=message_id
                 )
             else:
+                if screenshot_path and os.path.exists(screenshot_path):
+                    try:
+                        with open(screenshot_path, "rb") as sf:
+                            await context.bot.send_photo(chat_id=chat_id, photo=sf, caption="Here's how the site looks — let me know if this matches what you wanted.")
+                    except Exception as e:
+                        caption += f"\n\n(⚠️ Failed to send companion screenshot: {e})"
+                        
                 if is_local and "aria-sandbox" in file_path:
                     fname = os.path.basename(file_path)
                     container_uri = f"file:///mnt/aria-sandbox/{fname}"
@@ -199,6 +260,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_text = update.message.text.strip()
+    lower_text = user_text.lower()
+
+    # Webpage Builder multi-turn checks
+    if user_id in webpage_pending:
+        state = webpage_pending[user_id]
+        if state["state"] == "awaiting_confirmation":
+            if "yes" in lower_text or "y" in lower_text:
+                await update.message.reply_text("🚀 Great! Passing to orchestrator. This might take a minute...")
+                del webpage_pending[user_id]
+                intent = {
+                    "summary": f"Create a {state['style']} {state['type']} website for '{state['name']}'. Ensure it includes: {state['sections']}",
+                    "folder_name": state['name'].replace(" ", "") if state['name'] != "unknown" else "WebProject"
+                }
+                asyncio.create_task(run_orchestration(intent))
+                return
+            else:
+                state["state"] = "awaiting_answers"
+                state["follow_ups"] -= 1
+                await update.message.reply_text("Okay, let's adjust. What needs changing?")
+                return
+        else:
+            # Call LLM to parse
+            prompt = f"{WEB_BUILDER_PROMPT}\n\nCurrent state:\n{json.dumps({k:v for k,v in state.items() if k not in ['state', 'follow_ups']})}\n\nUser input: {user_text}\n\nJSON:"
+            try:
+                resp = await router.generate(prompt)
+                m = re.search(r'\{.*\}', resp, re.DOTALL)
+                if m:
+                    updates = json.loads(m.group(0))
+                    state.update({k: v for k, v in updates.items() if v != "unknown"})
+            except Exception as e:
+                logging.error(f"Error parsing with LLM: {e}")
+                
+            next_q = determine_next_question(state)
+            
+            if not next_q or state["follow_ups"] >= 3:
+                summary = f"Building: a {state['style']} {state['type']} site called '{state['name']}' with {state['sections']}. Sound right?"
+                state["state"] = "awaiting_confirmation"
+                await update.message.reply_text(f"📝 {summary}\n\nReply 'yes' to build or tell me what to change.")
+            else:
+                state["follow_ups"] += 1
+                await update.message.reply_text(f"🤖 {next_q}")
+            return
 
     # WhatsApp multi-turn checks
     if user_id in whatsapp_pending:
@@ -213,8 +316,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _send_whatsapp_approval(update, context, wa["contact"], user_text)
             return
 
+    # Orchestrator feedback check
+    feedback_state = memory.get_fact("waiting_for_orchestrator_feedback")
+    if feedback_state:
+        if lower_text in ["cancel", "no cancel", "stop", "abort"]:
+            memory.set_fact(f"ag_response_{feedback_state}", "fbcan")
+            memory.set_fact("waiting_for_orchestrator_feedback", None)
+            await update.message.reply_text("🛑 Cancelled orchestrator feedback loop.")
+            return
+        else:
+            memory.set_fact(f"ag_response_{feedback_state}", f"TEXT:{user_text}")
+            memory.set_fact("waiting_for_orchestrator_feedback", None)
+            await update.message.reply_text("✅ Feedback sent to orchestrator. It will now continue generating...")
+            return
+
     # Memory triggers
-    lower_text = user_text.lower()
     triggers = memory.get_triggers(user_id)
     for trig in triggers:
         if trig["trigger_phrase"] in lower_text:
@@ -246,6 +362,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             strict_prompt = user_text + "\n\nCRITICAL INSTRUCTION: You MUST return a populated 'tasks' array with a valid action. If you cannot, you MUST set 'is_chat': true and explain why."
             intent = await parse_user_command(strict_prompt, user_id=user_id, autonomy_mode=autonomy_mode)
         memory.add_message(user_id, "user", user_text)
+
+        # intercept start_web_builder
+        if any(t.get("action") == "start_web_builder" for t in intent.get("tasks", [])):
+            webpage_pending[user_id] = {
+                "state": "awaiting_answers",
+                "type": "unknown",
+                "name": "unknown",
+                "style": "unknown",
+                "sections": "unknown",
+                "follow_ups": 0
+            }
+            try:
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=placeholder_msg.message_id)
+            except Exception: pass
+            await update.message.reply_text("🤖 What do you want to build? Tell me about it in your own words — brand site, portfolio, blog, store, game page, whatever.")
+            return
 
         if intent.get("is_complex"):
             import planner
@@ -360,7 +492,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             results.append((action, result))
             
             if len(low_risk_tasks) > 1 and i < len(low_risk_tasks) - 1:
-                await asyncio.sleep(0.5)
+                delay = 1.0
+                if action in ["whatsapp_message", "play_spotify"]:
+                    delay = 5.0
+                elif action in ["open_app", "play_youtube", "web_search"]:
+                    delay = 3.0
+                await asyncio.sleep(delay)
 
         if results:
             combined_text = "\n\n".join(
@@ -573,6 +710,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🛑 **Scope Rejected.** Plan cancelled.", parse_mode=ParseMode.MARKDOWN)
         return
 
+    if data.startswith("ag_"):
+        parts = data.split("_", 3)
+        if len(parts) == 4:
+            action, session_id, req_id = parts[1], parts[2], parts[3]
+            memory.set_fact(f"ag_response_{session_id}_{req_id}", action)
+            labels = {
+                "app": "✅ Approved",
+                "appses": "✅ Approved for session",
+                "rej": "❌ Rejected",
+                "planapp": "✅ Plan Approved",
+                "planrej": "❌ Plan Rejected",
+                "fbapp": "✅ Final Approved",
+                "fbcan": "🛑 Cancelled"
+            }
+            try:
+                await query.edit_message_text(f"Permission {labels.get(action, action)}")
+            except Exception:
+                pass
+        return
+
     parts = data.split("_", 1)
     if len(parts) != 2:
         await query.edit_message_text("⚠️ Invalid callback data.")
@@ -607,9 +764,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 await query.message.reply_text(f"⚠️ Could not send screenshot: {e}")
         elif isinstance(result, str) and result.startswith("SENDFILE:"):
-            parts2     = result.split("SENDFILE:", 1)[1].split("|", 1)
+            parts2     = result.split("SENDFILE:", 1)[1].split("|")
             file_path  = parts2[0].strip()
             caption    = parts2[1].strip() if len(parts2) > 1 else "📦 File ready."
+            screenshot_path = None
+            for p in parts2[2:]:
+                if p.strip().startswith("SCREENSHOT:"):
+                    screenshot_path = p.strip().split("SCREENSHOT:", 1)[1].strip()
+                    
             try:
                 file_size = os.path.getsize(file_path)
                 is_local = bool(os.getenv("TELEGRAM_LOCAL_SERVER") or os.getenv("TELEGRAM_LOCAL_API_URL"))
@@ -619,6 +781,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"{caption}\n\n⚠️ File created but is too large to send via Telegram ({file_size / (1024*1024):.1f} MB).\nSaved locally at: {file_path}"
                     )
                 else:
+                    if screenshot_path and os.path.exists(screenshot_path):
+                        try:
+                            with open(screenshot_path, "rb") as sf:
+                                await query.message.reply_photo(photo=sf, caption="Here's how the site looks — let me know if this matches what you wanted.")
+                        except Exception as e:
+                            caption += f"\n\n(⚠️ Failed to send companion screenshot: {e})"
+                            
                     if is_local and "aria-sandbox" in file_path:
                         fname = os.path.basename(file_path)
                         container_uri = f"file:///mnt/aria-sandbox/{fname}"

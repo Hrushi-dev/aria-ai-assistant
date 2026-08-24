@@ -2,7 +2,7 @@ import os
 import time
 import asyncio
 from dotenv import load_dotenv
-from llm_clients import GeminiClient, OpenRouterClient, OllamaClient, ClientResponse
+from llm_clients import GeminiClient, OpenRouterClient, OllamaClient, GroqClient, ClientResponse
 import memory_store
 
 load_dotenv()
@@ -25,6 +25,10 @@ def _get_engine_client(engine: str):
         key = os.getenv("OPENROUTER_API_KEY")
         if not key: return None
         return OpenRouterClient(key)
+    elif engine == "GROQ":
+        key = os.getenv("GROQ_API_KEY")
+        if not key: return None
+        return GroqClient(key)
     elif engine == "LOCAL":
         return OllamaClient()
     return None
@@ -36,69 +40,50 @@ def _prune_for_local(prompt: str, history: list):
         prompt = prompt[:7997] + "..."
     return prompt, pruned_history
 
-async def generate(prompt: str, history: list = None, engine_override: str = None) -> str:
+async def generate(prompt: str, history: list = None, image_path: str = None, engine_override: str = None) -> str:
     """
-    Tries API1 -> API2 -> OPENROUTER -> LOCAL in order unless engine_override is set.
+    Respects the user's active model mode and does NOT automatically fallback.
+    If the model hits a rate limit or exhausts tokens, it throws a RouterError.
     """
-    engines_to_try = ["API1", "API2", "OPENROUTER", "LOCAL"]
-    
-    if engine_override:
-        eng_upper = engine_override.upper()
-        # Handle manual override values like "USE OPENROUTER" or just "OPENROUTER"
-        for eng in engines_to_try:
-            if eng in eng_upper:
-                engines_to_try = [eng]
-                break
-            
+    mode = engine_override
+    if not mode:
+        mode = memory_store.get_fact("active_model_mode") or "API1"
+        
+    mode = mode.upper()
+    if mode == "CLOUD":
+        engines_to_try = ["API1"]
+    else:
+        valid = ["API1", "API2", "GROQ", "OPENROUTER", "LOCAL"]
+        engines_to_try = [eng for eng in valid if eng in mode]
+        if not engines_to_try:
+            engines_to_try = ["API1"]
+
     loop = asyncio.get_running_loop()
+    engine = engines_to_try[0]
+    client = _get_engine_client(engine)
     
-    for engine in engines_to_try:
-        metric = memory_store.get_engine_metric(engine)
-        if metric:
-            cooldown_until = metric["cooldown_timestamp"]
-            consecutive_failures = metric["consecutive_failures"]
-        else:
-            cooldown_until = 0.0
-            consecutive_failures = 0
-            
-        if time.time() < cooldown_until:
-            print(f"[Router] {engine} is in cooldown. Skipping.")
-            continue
-            
-        client = _get_engine_client(engine)
-        if not client:
-            print(f"[Router] {engine} skipped (missing config/key).")
-            continue
-            
-        current_prompt = prompt
-        current_history = history or []
+    if not client:
+        raise RouterError(f"Engine {engine} is missing config/key.")
         
-        if engine == "LOCAL":
-            current_prompt, current_history = _prune_for_local(current_prompt, current_history)
-            
-        def _call_llm():
-            start_time = time.time()
-            resp = client.generate(current_prompt, current_history)
-            lat = time.time() - start_time
-            return resp, lat
-            
-        print(f"[Router] Attempting generation via {engine}...")
-        resp, lat = await loop.run_in_executor(None, _call_llm)
+    current_prompt = prompt
+    current_history = history or []
+    
+    if engine == "LOCAL":
+        current_prompt, current_history = _prune_for_local(current_prompt, current_history)
         
-        if resp.status_code == 200:
-            memory_store.update_engine_metric(engine, tokens=0, status=200, latency=lat, failures=0, cooldown=0.0)
-            return resp.text
-            
-        if resp.status_code == 400:
-            memory_store.update_engine_metric(engine, tokens=0, status=400, latency=lat, failures=consecutive_failures, cooldown=cooldown_until)
-            raise RouterError(f"400 Bad Request from {engine}: {resp.error}")
-            
-        print(f"[Router] {engine} failed with status {resp.status_code}: {resp.error}")
-        consecutive_failures += 1
-        if consecutive_failures >= 3:
-            print(f"[Router] {engine} marked TEMPORARILY_DEAD (cooldown activated).")
-            cooldown_until = time.time() + COOLDOWN_SECONDS
+    def _call_llm():
+        start_time = time.time()
+        resp = client.generate(current_prompt, current_history, image_path)
+        lat = time.time() - start_time
+        return resp, lat
         
-        memory_store.update_engine_metric(engine, tokens=0, status=resp.status_code, latency=lat, failures=consecutive_failures, cooldown=cooldown_until)
-            
-    raise RouterError("All available engines failed or are in cooldown.")
+    print(f"[Router] Attempting generation via {engine}...")
+    resp, lat = await loop.run_in_executor(None, _call_llm)
+    
+    if resp.status_code == 200:
+        return resp.text
+        
+    if resp.status_code == 429 or "quota" in str(resp.error).lower() or "limit" in str(resp.error).lower():
+        raise RouterError(f"Tokens/Quota exhausted for {engine}. Please ask me to switch to a different model (e.g., 'Change model to OPENROUTER' or 'LOCAL'). Details: {resp.error}")
+        
+    raise RouterError(f"Model {engine} failed (Status {resp.status_code}): {resp.error}")

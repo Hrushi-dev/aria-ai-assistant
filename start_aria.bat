@@ -1,6 +1,6 @@
 @echo off
 :: ── Kill ALL existing Aria instances first ────────────────────────────────────
-powershell -WindowStyle Hidden -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Stop-Process -Force"
+powershell -WindowStyle Hidden -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'main_daemon.py' } | Invoke-CimMethod -MethodName Terminate"
 timeout /t 4 /nobreak >nul
 
 :: ── Ensure Telegram Local API is running ─────────────────────────────────────

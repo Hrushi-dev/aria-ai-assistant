@@ -170,6 +170,47 @@ def close_window_or_tab(target_query: str) -> str:
     return f"⚠️ No active window or process found matching '{target_query}'."
 
 
+def minimize_window_or_tab(target_query: str) -> str:
+    query = target_query.lower().strip()
+    minimized = []
+
+    EnumWindows = ctypes.windll.user32.EnumWindows
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+    GetWindowText = ctypes.windll.user32.GetWindowTextW
+    GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
+    ShowWindow = ctypes.windll.user32.ShowWindow
+    SW_MINIMIZE = 6
+
+    def foreach_window(hwnd, lParam):
+        length = GetWindowTextLength(hwnd)
+        if length > 0:
+            buff = ctypes.create_unicode_buffer(length + 1)
+            GetWindowText(hwnd, buff, length + 1)
+            title = buff.value.strip()
+            if title and query in title.lower():
+                ShowWindow(hwnd, SW_MINIMIZE)
+                minimized.append(title)
+        return True
+
+    EnumWindows(EnumWindowsProc(foreach_window), 0)
+    if minimized:
+        return f"🔽 Successfully minimized window(s):\n" + "\n".join(f"• {w}" for w in minimized[:5])
+
+    return f"⚠️ No active window found matching '{target_query}' to minimize."
+
+def handle_system_power(command: str) -> str:
+    power_cmd = (command or "").lower()
+    if "sleep" in power_cmd:
+        os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+        return "💤 PC sent to sleep."
+    elif "restart" in power_cmd:
+        os.system("shutdown /r /t 5")
+        return "🔄 PC restarting in 5 seconds."
+    else:
+        os.system("shutdown /s /t 5")
+        return "🛑 PC shutting down in 5 seconds."
+
+
 # ─── App / protocol launcher ────────────────────────────────────────────────
 
 def launch_app_or_protocol(app_name: str) -> str:
@@ -554,6 +595,33 @@ def convert_to_pdf(source_path: str, dest_dir: str | None = None) -> str:
 
 # ─── GUI / Cursor automation ────────────────────────────────────────
 
+def _verify_gui_state(expected_description: str, max_retries: int = 2) -> dict:
+    import asyncio
+    from vision_gateway import verify_screen_state
+    
+    last_state = None
+    for attempt in range(max_retries + 1):
+        shot_res = take_desktop_screenshot()
+        if not shot_res.startswith("SCREENSHOT:"):
+            return {"approved": False, "reason": "Failed to take screenshot."}
+        shot_path = shot_res.replace("SCREENSHOT:", "")
+        
+        try:
+            state = asyncio.run(verify_screen_state(shot_path, expected_description))
+        except Exception as e:
+            return {"approved": False, "reason": f"Vision exception: {e}"}
+            
+        if state.get("approved"):
+            return state
+            
+        last_state = state
+        if attempt < max_retries:
+            # Simple retry backoff (e.g., waiting for UI to load)
+            time.sleep(3.0)
+            
+    return last_state or {"approved": False, "reason": "Max retries exceeded."}
+
+
 def gui_click(x: int | None = None, y: int | None = None,
               window_title: str | None = None, element_text: str | None = None) -> str:
     try:
@@ -609,6 +677,10 @@ def youtube_visual_search(query: str) -> str:
     url = f"https://www.youtube.com/results?search_query={encoded}"
     webbrowser.open(url)
     time.sleep(3.0)
+    
+    verify = _verify_gui_state(f"YouTube search results page for '{query}' is fully loaded and visible.")
+    if not verify.get("approved"):
+        return f"⚠️ YouTube verification failed: {verify.get('reason')} Hint: {verify.get('next_action_hint')}"
 
     shot_dir = DEFAULT_DUMP_DIR
     shot_dir.mkdir(parents=True, exist_ok=True)
@@ -725,6 +797,11 @@ ACTION_ALIASES: dict[str, str] = {
     "spotify":              "play_spotify",
     "play_music":           "play_spotify",
     "search_youtube":       "play_youtube",
+    "minimize_window":      "minimize_app",
+    "minimize_tab":         "minimize_app",
+    "sleep_pc":             "system_power",
+    "shutdown_pc":          "system_power",
+    "check_tokens":         "token_quota"
 }
 
 
@@ -792,32 +869,24 @@ def execute_tool(intent: dict) -> str:
             target.unlink()
             return f"🗑️ Successfully deleted file: {target.name}"
 
-        elif action == "whatsapp_message":
-            import pyautogui
-            import pyperclip
-            
-            contact_name = target_str or command or "unknown"
-            body = file_content or ""
-            
-            os.startfile("whatsapp:")
-            time.sleep(1.5)
-            
-            pyautogui.hotkey('ctrl', 'f')
-            time.sleep(0.5)
-            pyautogui.typewrite(contact_name, interval=0.05)
-            time.sleep(0.5)
-            pyautogui.press('enter')
-            time.sleep(0.6)
-            
-            pyperclip.copy(body)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.2)
-            pyautogui.press('enter')
-            
-            return f"✅ WhatsApp message sent to '{contact_name}'."
 
         elif action in ["close_app", "close_window"]:
             return close_window_or_tab(command or target_str or "")
+
+        elif action == "minimize_app":
+            return minimize_window_or_tab(command or target_str or "")
+
+        elif action == "system_power":
+            return handle_system_power(command or target_str or "")
+
+        elif action == "token_quota":
+            import memory_store as mem
+            metrics = mem.get_engine_metric("API1")
+            tokens = metrics.get("tokens_consumed", 0) if metrics else 0
+            limit = 1500000
+            left = limit - tokens
+            pct = max(0, (left / limit) * 100)
+            return f"📊 **Token Quota Status**\n\n• Consumed: {tokens:,}\n• Estimated Limit: {limit:,} (Daily)\n• Estimated Remaining: {pct:.1f}% ({left:,} tokens left)"
 
         elif action == "minimize_all":
             import pyautogui
@@ -1029,18 +1098,37 @@ def execute_tool(intent: dict) -> str:
             return gui_type(command or "")
 
         elif action == "whatsapp_message":
+            import pyautogui
+            import pyperclip
+            
             contact = intent.get("_wa_contact") or intent.get("command") or ""
             body    = intent.get("_wa_body") or intent.get("file_content") or ""
             digits = re.sub(r"\D", "", contact)
             if digits:
                 encoded_body = urllib.parse.quote(body)
                 webbrowser.open(f"https://wa.me/{digits}?text={encoded_body}")
+                return f"📱 WhatsApp opened for '{contact}'. Message: \"{body[:60]}\""
             else:
                 try:
                     os.startfile("whatsapp:")
                 except Exception:
                     webbrowser.open("https://web.whatsapp.com")
-            return f"📱 WhatsApp opened for '{contact}'. Message: \"{body[:60]}\""
+                
+                time.sleep(4.0)
+                pyautogui.hotkey('ctrl', 'f')
+                time.sleep(0.5)
+                pyautogui.typewrite(contact, interval=0.05)
+                time.sleep(0.5)
+                pyautogui.press('enter')
+                time.sleep(3.0)
+                
+                if body:
+                    pyperclip.copy(body)
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.5)
+                    pyautogui.press('enter')
+                    
+                return f"✅ WhatsApp message blind-sent to '{contact}'."
 
         elif action == "media_control":
             cmd_lower = (command or "toggle").lower()
@@ -1087,6 +1175,19 @@ def execute_tool(intent: dict) -> str:
                       "next": "⏭ Next track", "prev": "⏮ Previous track",
                       "previous": "⏮ Previous track", "stop": "⏹ Stopped"}
             return labels.get(cmd_lower, "⏯ Media key sent.")
+
+        elif action == "antigravity_orchestrate":
+            import asyncio
+            from antigravity_orchestrator import run_orchestration
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Since execute_tool is often run in an executor, loop.run_until_complete won't work if it's the main loop.
+                # Actually run_orchestration is async, and we're inside a sync function `execute_tool`.
+                # If we're inside a thread pool, we can create a new loop.
+                new_loop = asyncio.new_event_loop()
+                return new_loop.run_until_complete(run_orchestration(intent))
+            else:
+                return loop.run_until_complete(run_orchestration(intent))
 
         return f"Action '{action}' recognized but has no execution handler."
 

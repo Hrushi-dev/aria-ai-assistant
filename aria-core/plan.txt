@@ -1,0 +1,34 @@
+Context for why we're building this (read this first — it should inform implementation choices below):
+
+This project (Aria) has spent this entire session finding and fixing GUI automation reliability bugs — WhatsApp clicking wrong elements, YouTube minimizing instead of playing, zip corruption, callback routing bugs — almost all traceable to the same root cause: automation acting on assumptions about what's on screen (fixed pixel coordinates, fixed sleep timers) instead of verifying what's actually there. The rest of this system (planner → scope contract → permission gateway → agent runtime) was built around a strict principle: never act blindly, always verify before proceeding, always give the user real control over risky/uncertain steps rather than guessing. GUI automation has been the one place that principle wasn't consistently applied — this module closes that gap. The goal is bringing every GUI-driven feature (WhatsApp, YouTube, and the new Antigravity orchestration) up to the same reliability standard as the rest of the system, using a local model for fast/cheap action decisions and a cloud vision model as an independent verifier that checks the actual screen state after each meaningful step, so nothing proceeds on a guess.
+
+Part 1 — New model providers (extend existing router.py/llm_clients.py structure, don't build a parallel system):
+
+Add a GroqClient to llm_clients.py following the same interface as the existing clients. User will supply GROQ_API_KEY via .env. Check Groq's current free-tier lineup for a strong fast text-reasoning model, and separately check whether any current Groq model reliably supports vision input — report which models are actually available before assuming either way. Likely role: an additional fast/cheap text-reasoning tier (e.g. usable by the planner or agent_runtime's self-heal loop), not necessarily the vision verifier unless vision support is confirmed.
+OpenRouter default coding model: set the configured default OpenRouter model to cohere/north-mini-code (or the exact current OpenRouter slug — verify it, don't guess the string). This is currently one of the strongest free coding-agent models available: MoE architecture (30B total/3B active params, so it's fast/cheap to run), 256K context, purpose-trained for agentic coding and tool-use harnesses. Important: OpenRouter's free-tier lineup churns frequently (models get delisted with little notice — this has already happened to other models in this exact list). Do not hardcode this model name anywhere — it must be a config value (.env or the existing DB-backed config mentioned in the original architecture spec) that's a one-line change if this model gets delisted or a better option appears later.
+After adding Groq, re-run the Phase 2 circuit-breaker regression test (force API1 failures, confirm failover chain still works correctly) to confirm the new provider didn't break the existing 4-tier failover logic.
+
+Part 2 — Shared vision-verification module:
+
+Create vision_gateway.py: verify_screen_state(screenshot_path, expected_description, context=None) -> {"approved": bool, "reason": str, "next_action_hint": str}, calling a confirmed vision-capable cloud model (Gemini, unless Groq is confirmed to support vision well) through the existing router.py.
+Standard loop per GUI step: local model performs action → wait 3 seconds (user-specified, for load/network lag) → screenshot → verify_screen_state() → approved: proceed; not approved: retry (max 2) using the returned guidance; still failing: escalate to Telegram with the screenshot and a clear explanation, don't guess further.
+Verify only at meaningful checkpoints (landed on right contact, dialog opened, permission prompt appeared, etc.) — not every micro-action, for cost/latency reasons.
+Retrofit the existing WhatsApp and YouTube picker flows to use this shared verifier instead of their current ad-hoc screenshot checks, so all GUI features share one verification path.
+Test the shared verifier in isolation first — run it against WhatsApp's existing "did the chat open" checkpoint — before building Feature C on top of it.
+
+Part 3 — Feature C: Antigravity IDE orchestration (built using the verified shared module from Part 2):
+
+Folder creation & launch: create the named project folder (confirm/establish a default location, e.g. D:\AI-AIS\Projects\<name>, rather than assuming). Launch Antigravity pointed at that folder — check for a CLI/protocol handler first (antigravity <path> or similar); fall back to GUI automation + vision-verify only if no such interface exists.
+Submit project prompt: check for a CLI/API submission path before falling back to GUI automation (typing into the chat panel via vision-grounded clicks).
+Permission prompt handling: detect Antigravity's own permission-style prompts (screenshot + vision check, or poll Antigravity's status/log output if available — check before assuming vision is the only option). Never auto-click. On detection, send Telegram a message with the actual command/action text and three options:
+✅ Approve (this one only)
+✅ Approve for this session (auto-approve all subsequent prompts for the rest of this orchestration run only, scoped by goal/session id — must not carry over to a different project run)
+❌ Reject (pause, wait for further instruction)
+When "approve for session" is active, still send a brief notification for each auto-approved prompt so the user has visibility without being asked again.
+Poll for completion: poll status/log/output periodically, no fixed blind timeout. Report to the user only on meaningful state changes.
+E2E test trigger: once build is reported complete, instruct Antigravity to run an E2E test pass via the same interface used for the original prompt, and wait using the same polling approach.
+Delivery: zip the finished project folder (reuse the already-fixed create_zip logic — folder support, aria-sandbox staging) and deliver via the local Bot API server (2GB ceiling, size is no longer a concern).
+
+Acceptance test: run end-to-end on a small, real, low-stakes project ask. Confirm for real: folder created, Antigravity opened to the right folder, prompt submitted, at least one real permission prompt correctly detected and sent to Telegram with all three options tested (Approve on the first, Approve-for-session on a later one if multiple occur, confirm subsequent prompts really do auto-approve without asking), completion detected without a fixed timeout, E2E test triggered, final zip delivered and opens correctly.
+
+Build and test in this order: Part 1 → Part 2 (isolated test) → Part 3 (full end-to-end). Report back in stages, not all at once — given how much iteration the last several features took even with careful testing, don't skip straight to the full Feature C run without confirming Parts 1 and 2 work first.

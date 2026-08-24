@@ -87,22 +87,27 @@ def init_db():
             # Ensure WAL mode
             c.execute("PRAGMA journal_mode=WAL")
 
-def set_fact(key: str, value: str):
+def set_fact(key: str, value: str | None):
     with contextlib.closing(get_db_connection()) as conn:
         with conn:
-            conn.execute("""
-                INSERT INTO facts (key, value, updated_at) 
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET 
-                    value = excluded.value, 
-                    updated_at = CURRENT_TIMESTAMP
-            """, (key.strip(), str(value).strip()))
+            if value is None:
+                conn.execute("DELETE FROM facts WHERE key = ?", (key.strip(),))
+            else:
+                conn.execute("""
+                    INSERT INTO facts (key, value, updated_at) 
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET 
+                        value = excluded.value, 
+                        updated_at = CURRENT_TIMESTAMP
+                """, (key.strip(), str(value).strip()))
 
 def get_fact(key: str) -> str | None:
     with contextlib.closing(get_db_connection()) as conn:
         c = conn.execute("SELECT value FROM facts WHERE key = ?", (key.strip(),))
         row = c.fetchone()
-        return row["value"] if row else None
+        if not row or row["value"] == "None":
+            return None
+        return row["value"]
 
 def get_all_facts() -> dict:
     with contextlib.closing(get_db_connection()) as conn:
