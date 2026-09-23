@@ -373,6 +373,9 @@ def create_zip_archive(source_paths: list[str], archive_name: str, dest_dir: str
     import uuid
     import shutil
     
+    # Exclusions as requested by spec
+    exclusions = {".git", "node_modules", "venv", ".env", "__pycache__"}
+    
     # Write to a non-synced scratch location first
     temp_zip_path = DEFAULT_DUMP_DIR / f"temp_{uuid.uuid4().hex}.zip"
     DEFAULT_DUMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -386,14 +389,19 @@ def create_zip_archive(source_paths: list[str], archive_name: str, dest_dir: str
                     continue
                 if p.is_dir():
                     for root, dirs, files in os.walk(p):
+                        # Filter out excluded directories in-place so os.walk skips them entirely
+                        dirs[:] = [d for d in dirs if d not in exclusions]
                         for file in files:
+                            if file in exclusions:
+                                continue
                             file_path = Path(root) / file
                             arcname = file_path.relative_to(p.parent)
                             zf.write(file_path, arcname)
                             added.append(file_path.name)
                 else:
-                    zf.write(p, p.name)
-                    added.append(p.name)
+                    if p.name not in exclusions:
+                        zf.write(p, p.name)
+                        added.append(p.name)
                     
         # Verify it's a valid zip before reporting success
         if not zipfile.is_zipfile(temp_zip_path):

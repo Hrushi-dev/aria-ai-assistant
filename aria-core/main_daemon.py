@@ -46,44 +46,24 @@ webpage_pending: dict[int, dict] = {}
 WEB_BUILDER_PROMPT = """You are Aria's Website Builder Brain.
 The user wants to build a website. They will describe what they want.
 Extract the following information from their description:
-- type: (e.g. portfolio, blog, store, brand site, unknown)
-- name: (name or title of the site, or unknown)
-- style: (color theme, tone, aesthetics, or unknown)
-- sections: (any specific pages, sections, or content mentioned, or unknown)
+- description: (what the website is about, features, sections, or unknown)
+- style: (color theme, tone, aesthetics, gradients, or unknown)
 
 If they mention new details, update the existing details.
 Output ONLY JSON in the following format:
 {
-  "type": "...",
-  "name": "...",
-  "style": "...",
-  "sections": "..."
+  "description": "...",
+  "style": "..."
 }
 """
 
 def determine_next_question(state):
     """Determine what to ask next based on missing info."""
-    if state["type"] == "unknown":
-        return "What kind of website are we building? (e.g. portfolio, blog, store, brand site)"
+    if state["description"] == "unknown":
+        return "Can you explain what the website is? What should it do?"
     
-    if state["name"] == "unknown":
-        if state["type"] == "portfolio":
-            return "What's your name or the name for this portfolio?"
-        elif state["type"] == "store":
-            return "What's the name of your store, and what are you selling?"
-        else:
-            return "What is the name of this website or brand?"
-
     if state["style"] == "unknown":
-        return "Do you have any preferences for colors, vibe, or style? (e.g. dark mode, minimalist, neon, etc.)"
-
-    if state["sections"] == "unknown":
-        if state["type"] == "portfolio":
-            return "What kind of work are you showcasing, and roughly how many projects?"
-        elif state["type"] == "store":
-            return "Are there any specific product categories or sections you want on the homepage?"
-        else:
-            return "Any specific sections or features you must have on this site?"
+        return "What kind of style or color gradients do you want?"
             
     return None
 
@@ -240,6 +220,19 @@ async def _send_media_player(context, chat_id: int, label: str):
     )
 
 
+async def terminate_orchestrator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+        
+    # Force reset the active state
+    memory.set_fact("ag_orchestrator_active", "False")
+    memory.set_fact("waiting_for_orchestrator_feedback", None)
+    
+    # Clear the instruction queue
+    memory.set_fact("ag_orchestrator_instructions", "[]")
+    
+    await update.message.reply_text("🛑 **Emergency Stop:** Orchestration session terminated and state reset.", parse_mode=ParseMode.MARKDOWN)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER_ID:
         return
@@ -261,6 +254,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_text = update.message.text.strip()
     lower_text = user_text.lower()
+    
+    # Hard-route coding tasks directly to the IDE orchestrator
+    trigger_keywords = ["website", "build a", "make a", "code", "app", "pomodoro"]
+    if any(keyword in lower_text for keyword in trigger_keywords) and len(user_text) < 100:
+        await update.message.reply_text("🚀 Hard-routing directly to Antigravity IDE...")
+        
+        # Force state to active
+        memory.set_fact("ag_orchestrator_active", "True")
+        memory.set_fact("ag_orchestrator_instructions", "[]")
+        
+        # Fire orchestrator and exit handler so LLM doesn't do a web search
+        intent = {"summary": user_text, "folder_name": "WebProject"}
+        import antigravity_orchestrator
+        asyncio.create_task(antigravity_orchestrator.run_orchestration(intent))
+        return
 
     # Webpage Builder multi-turn checks
     if user_id in webpage_pending:
@@ -270,8 +278,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("🚀 Great! Passing to orchestrator. This might take a minute...")
                 del webpage_pending[user_id]
                 intent = {
-                    "summary": f"Create a {state['style']} {state['type']} website for '{state['name']}'. Ensure it includes: {state['sections']}",
-                    "folder_name": state['name'].replace(" ", "") if state['name'] != "unknown" else "WebProject"
+                    "summary": f"Create a {state['style']} website with the following description: {state['description']}",
+                    "folder_name": "WebProject"
                 }
                 asyncio.create_task(run_orchestration(intent))
                 return
@@ -294,8 +302,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             next_q = determine_next_question(state)
             
-            if not next_q or state["follow_ups"] >= 3:
-                summary = f"Building: a {state['style']} {state['type']} site called '{state['name']}' with {state['sections']}. Sound right?"
+            if not next_q or state["follow_ups"] >= 2:
+                summary = f"Building a {state['style']} website based on: '{state['description']}'. Sound right?"
                 state["state"] = "awaiting_confirmation"
                 await update.message.reply_text(f"📝 {summary}\n\nReply 'yes' to build or tell me what to change.")
             else:
@@ -329,6 +337,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             memory.set_fact("waiting_for_orchestrator_feedback", None)
             await update.message.reply_text("✅ Feedback sent to orchestrator. It will now continue generating...")
             return
+
+    # Orchestrator ongoing instruction forwarding
+    orchestrator_active = memory.get_fact("ag_orchestrator_active")
+    if orchestrator_active == "True" and not feedback_state:
+        if lower_text in ["stop", "terminate", "cancel"]:
+            await terminate_orchestrator(update, context)
+            return
+            
+        queue_str = memory.get_fact("ag_orchestrator_instructions") or "[]"
+        try:
+            queue = json.loads(queue_str)
+        except:
+            queue = []
+        queue.append(user_text)
+        memory.set_fact("ag_orchestrator_instructions", json.dumps(queue))
+        await update.message.reply_text("✅ Instruction forwarded to the active Antigravity session.")
+        return
 
     # Memory triggers
     triggers = memory.get_triggers(user_id)
@@ -365,18 +390,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # intercept start_web_builder
         if any(t.get("action") == "start_web_builder" for t in intent.get("tasks", [])):
-            webpage_pending[user_id] = {
-                "state": "awaiting_answers",
-                "type": "unknown",
-                "name": "unknown",
-                "style": "unknown",
-                "sections": "unknown",
-                "follow_ups": 0
-            }
             try:
                 await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=placeholder_msg.message_id)
             except Exception: pass
-            await update.message.reply_text("🤖 What do you want to build? Tell me about it in your own words — brand site, portfolio, blog, store, game page, whatever.")
+            
+            tech_keywords = ["html", "css", "js", "react", "python", "tailwind", "node", "javascript", "typescript", "nextjs"]
+            has_tech = any(kw in user_text.lower() for kw in tech_keywords)
+            
+            if len(user_text) >= 50 or has_tech:
+                await update.message.reply_text("🚀 Detailed prompt detected. Passing directly to orchestrator...")
+                orchestrator_intent = {
+                    "summary": user_text,
+                    "folder_name": "WebProject"
+                }
+                asyncio.create_task(run_orchestration(orchestrator_intent))
+                return
+
+            webpage_pending[user_id] = {
+                "state": "awaiting_answers",
+                "description": "unknown",
+                "style": "unknown",
+                "follow_ups": 0
+            }
+            await update.message.reply_text("🤖 Can you explain what the website is? What should it do?")
             return
 
         if intent.get("is_complex"):
@@ -840,8 +876,15 @@ if __name__ == "__main__":
         .build()
     )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler(["stop", "terminate"], terminate_orchestrator))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_error_handler(error_handler)
+    
+    # Force-clear any hanging orchestration states on startup
+    memory.set_fact("ag_orchestrator_active", "False")
+    memory.set_fact("ag_orchestrator_instructions", "[]")
+    memory.set_fact("waiting_for_orchestrator_feedback", None)
+    
     print("Aria Autonomous Agent running...")
     app.run_polling(drop_pending_updates=True)
