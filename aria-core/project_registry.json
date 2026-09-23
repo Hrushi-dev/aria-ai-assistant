@@ -1,0 +1,53 @@
+{
+  "_comment": "ARIA Project Registry — maps project names to their location, start command, and dev URL. ARIA uses this to manage, edit, and preview projects on this machine.",
+  "projects": {
+    "certify": {
+      "aliases": ["certify", "certificate", "cert gen", "certificate generator"],
+      "path": "D:\\Certify",
+      "start_cmd": "start.bat",
+      "dev_url": "http://localhost:3000",
+      "type": "nextjs",
+      "description": "Automated certificate generator and emailer (Next.js)"
+    },
+    "screensnipe": {
+      "aliases": ["screensnipe", "screen snipe", "snipe", "circle to search", "screen search"],
+      "path": "D:\\Anything From S\\Screen snipe",
+      "start_cmd": ".\\venv\\Scripts\\python.exe src\\main.py",
+      "dev_url": null,
+      "type": "python-desktop",
+      "description": "Circle-to-search desktop AI tool (PyQt6 + Gemini/Ollama)"
+    },
+    "nikeluxuryweb": {
+      "aliases": ["nike", "nikelux", "nike luxury", "nike web"],
+      "path": "D:\\d_vol\\AI-AIS\\Projects\\NikeLuxuryWeb",
+      "start_cmd": "npm run dev",
+      "dev_url": "http://localhost:5173",
+      "type": "vite",
+      "description": "Nike luxury web project (Vite)"
+    },
+    "pomodoro": {
+      "aliases": ["pomodoro", "timer", "pomodoro timer"],
+      "path": "D:\\d_vol\\AI-AIS\\Projects\\pomodoro",
+      "start_cmd": "npm run dev",
+      "dev_url": "http://localhost:5174",
+      "type": "vite",
+      "description": "Pomodoro timer web app (Vite)"
+    },
+    "webproject": {
+      "aliases": ["webproject", "web project"],
+      "path": "D:\\d_vol\\AI-AIS\\Projects\\WebProject",
+      "start_cmd": "npm run dev",
+      "dev_url": "http://localhost:5175",
+      "type": "vite",
+      "description": "General web project (Vite)"
+    },
+    "aria": {
+      "aliases": ["aria", "aria core", "aria daemon", "telegram bot"],
+      "path": "D:\\d_vol\\AI-AIS\\aria-core",
+      "start_cmd": "python main_daemon.py",
+      "dev_url": null,
+      "type": "python-daemon",
+      "description": "ARIA Telegram daemon (Python)"
+    }
+  }
+}

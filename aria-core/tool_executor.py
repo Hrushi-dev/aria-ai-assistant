@@ -1197,7 +1197,50 @@ def execute_tool(intent: dict) -> str:
             else:
                 return loop.run_until_complete(run_orchestration(intent))
 
+
+        # ── Project dev-task (Gemini-powered code editing + screenshot preview) ──
+        elif action == "dev_task":
+            project_name = (command or "").strip()
+            task_description = (file_content or "").strip()
+            if not project_name:
+                return "⚠️ Please specify which project to edit (e.g. 'update certify — add dark mode')."
+            if not task_description:
+                return "⚠️ Please describe what you want to change."
+            try:
+                import asyncio as _asyncio
+                import dev_task_tool as _dt
+                result = _asyncio.run(_dt.run_dev_task(project_name, task_description, want_preview=True))
+                out = result["summary"]
+                if result.get("screenshot_path"):
+                    out = f"SCREENSHOT:{result['screenshot_path']}|{out}"
+                return out
+            except Exception as e:
+                import traceback
+                return f"❌ Dev task failed: {e}\n{traceback.format_exc()}"
+
+        # ── Certificate workflow ─────────────────────────────────────────────────
+        elif action == "cert_workflow":
+            sub = (command or "start").strip().lower()
+            if sub == "start":
+                return (
+                    "📜 **Certificate Workflow Started!**\n\n"
+                    "Please send me:\n"
+                    "1. Your **PDF certificate template**\n"
+                    "2. Your **CSV file** with recipient names (and optionally emails)\n\n"
+                    "You can send them in any order. I'll parse the CSV and generate a sample for you to review first."
+                )
+            return f"⚠️ Unknown cert_workflow command: {sub}"
+
+        # ── List registered projects ─────────────────────────────────────────────
+        elif action == "list_projects":
+            try:
+                import dev_task_tool as _dt
+                return _dt.list_projects()
+            except Exception as e:
+                return f"❌ Could not list projects: {e}"
+
         return f"Action '{action}' recognized but has no execution handler."
+
 
     except Exception as e:
         import traceback

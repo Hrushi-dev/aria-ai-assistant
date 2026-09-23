@@ -72,7 +72,8 @@ ALLOWED ACTIONS:
 create_file_folder | delete_folder | delete_file | close_window | open_app | minimize_all |
 play_youtube | play_spotify | web_search | take_screenshot | list_files |
 list_windows | set_memory_trigger | volume_control | create_zip |
-convert_to_pdf | gui_click | gui_type | whatsapp_message | media_control
+convert_to_pdf | gui_click | gui_type | whatsapp_message | media_control |
+dev_task | cert_workflow | list_projects
 
 OUTPUT FORMAT — return ONLY valid JSON, no markdown wrapper, no extra text:
 
