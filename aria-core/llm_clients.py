@@ -5,14 +5,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class ClientResponse:
     def __init__(self, text: str, status_code: int = 200, error: str = None):
         self.text = text
         self.status_code = status_code
         self.error = error
 
+
 class GeminiClient:
-    def __init__(self, api_key: str, model: str = "gemini-3.6-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         self.api_key = api_key
         self.model = model
 
@@ -20,7 +22,7 @@ class GeminiClient:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         import base64
         import mimetypes
-        
+
         contents = []
         if history:
             for msg in history:
@@ -28,6 +30,7 @@ class GeminiClient:
                     "role": msg.get("role", "user"),
                     "parts": [{"text": msg.get("content", "")}]
                 })
+
         parts = [{"text": prompt}]
         if image_path and os.path.exists(image_path):
             mime_type, _ = mimetypes.guess_type(image_path)
@@ -41,7 +44,7 @@ class GeminiClient:
                     "data": img_b64
                 }
             })
-            
+
         contents.append({
             "role": "user",
             "parts": parts
@@ -53,12 +56,12 @@ class GeminiClient:
                 "temperature": 0.1
             }
         }
-        
+
         try:
             resp = requests.post(url, json=payload, timeout=20.0)
             if resp.status_code != 200:
                 return ClientResponse("", status_code=resp.status_code, error=resp.text)
-            
+
             data = resp.json()
             try:
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -70,31 +73,32 @@ class GeminiClient:
         except requests.exceptions.RequestException as e:
             return ClientResponse("", status_code=500, error=str(e))
 
+
 class OpenRouterClient:
     def __init__(self, api_key: str, model: str = None):
         self.api_key = api_key
         self.model = model or os.getenv("OPENROUTER_DEFAULT_MODEL", "cohere/north-mini-code:free")
-        
+
     def generate(self, prompt: str, history: list = None, image_path: str = None) -> ClientResponse:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         messages = history or []
         messages.append({"role": "user", "content": prompt})
-        
+
         payload = {
             "model": self.model,
             "messages": messages
         }
-        
+
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=45.0)
             if resp.status_code != 200:
                 return ClientResponse("", status_code=resp.status_code, error=resp.text)
-                
+
             data = resp.json()
             try:
                 text = data["choices"][0]["message"]["content"]
@@ -106,31 +110,32 @@ class OpenRouterClient:
         except requests.exceptions.RequestException as e:
             return ClientResponse("", status_code=500, error=str(e))
 
+
 class GroqClient:
     def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
         self.api_key = api_key
         self.model = model
-        
+
     def generate(self, prompt: str, history: list = None, image_path: str = None) -> ClientResponse:
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         messages = history or []
         messages.append({"role": "user", "content": prompt})
-        
+
         payload = {
             "model": self.model,
             "messages": messages
         }
-        
+
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=20.0)
             if resp.status_code != 200:
                 return ClientResponse("", status_code=resp.status_code, error=resp.text)
-                
+
             data = resp.json()
             try:
                 text = data["choices"][0]["message"]["content"]
@@ -142,15 +147,16 @@ class GroqClient:
         except requests.exceptions.RequestException as e:
             return ClientResponse("", status_code=500, error=str(e))
 
+
 class OllamaClient:
     def __init__(self, model: str = "qwen2.5:7b"):
         self.model = model
-        
+
     def generate(self, prompt: str, history: list = None, image_path: str = None) -> ClientResponse:
         url_chat = "http://localhost:11434/api/chat"
         messages = history or []
         messages.append({"role": "user", "content": prompt})
-        
+
         payload = {
             "model": self.model,
             "messages": messages,
@@ -160,12 +166,12 @@ class OllamaClient:
                 "temperature": 0.0
             }
         }
-        
+
         try:
             resp = requests.post(url_chat, json=payload, timeout=45.0)
             if resp.status_code != 200:
                 return ClientResponse("", status_code=resp.status_code, error=resp.text)
-                
+
             data = resp.json()
             try:
                 text = data["message"]["content"]

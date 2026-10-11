@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 import memory_store as memory
 
 _log = logging.getLogger(__name__)
-
 load_dotenv()
 
 API_KEYS = [
@@ -24,21 +23,20 @@ API_KEYS = [
 API_KEYS = [k for k in API_KEYS if k]
 
 MODELS_POOL = [
-    "gemini-3.6-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
 ]
 
-LOCAL_MODEL = "qwen2.5:7b"
+LOCAL_MODEL = "qwen2.5:7b"  # All-rounder local model
 
 
-# ─── System prompt ───────────────────────────────────────────────────────────
-
+# --- System prompt ---
 def get_system_prompt(user_id: int = None) -> str:
     current_time_str = datetime.now().strftime("%A, %B %d, %Y at %I:%M:%S %p")
     facts   = memory.get_all_facts()
     history = memory.get_recent_history(user_id, limit=6) if user_id else "No prior history."
     facts_str = "\n".join([f"- {k}: {v}" for k, v in facts.items()]) if facts else "None."
-
-    return f"""You are Aria, an autonomous Windows desktop AI agent. Host Time: {current_time_str}.
+    return f"""You are Aria. Host Time: {current_time_str}.
 
 Known Facts:
 {facts_str}
@@ -46,8 +44,14 @@ Known Facts:
 Recent Conversation:
 {history}
 
-ABSOLUTE RULES — never violate:
-1. NEVER say "Please wait", "One moment", "Let me check" or similar stalling. Act immediately.
+Personality:
+- You are Aria. Talk like a real person, not a chatbot.
+- SHORT replies only — 1 sentence unless the user needs more.
+- BANNED PHRASES (never ever say these): "Just let me know", "How can I help", "I can assist", "Feel free to ask", "What can I do for you", "As an AI", "Certainly!", "Of course!", "Sure thing!", "I'd be happy to", "Let me know if you need", "a wide range of tasks such as"
+- Instead: be blunt, casual, direct. Like texting a smart friend.
+
+ABSOLUTE RULES:
+1. NEVER say "Please wait", "One moment", "Let me check" or stalling. Act immediately.
 2. NEVER create files unless user says "save", "create a file", or "write to disk". For code requests put code inside chat_reply using markdown code blocks. is_chat must be true.
 3. NEVER return null for chat_reply when is_chat is true. Always provide a real reply string.
 4. For multi-step requests return ALL steps inside tasks[]. Never silently drop steps.
@@ -64,16 +68,20 @@ ABSOLUTE RULES — never violate:
 15. If the user asks to send a WhatsApp message but DOES NOT provide the message body, you MUST return is_chat: true and ask what the message should say. If they DO provide the body, return action "whatsapp_message", set "command" to the contact name, and "file_content" to the message body.
 16. "click at X Y" or "click on [element]" → action: "gui_click", command: "X Y" (coords as string).
 17. "play", "pause", "next", "prev", "stop" alone → action: "media_control", command: the word itself.
-68. "minimize", "show desktop", "minimize all" → action: "minimize_all"
-69. If user specifies a location (e.g., "desktop", "downloads"), set target_path to that string EXACTLY (e.g. "desktop").
-70. MULTI-TURN CONTEXT: When executing a task after asking a clarification question (e.g., user answers "which folder?"), you MUST reconstruct the entire task JSON including ALL original context (e.g., target_path, folder_name, action) from the previous turns in the new task.
+18. "minimize", "show desktop", "minimize all" → action: "minimize_all"
+19. If user specifies a location (e.g., "desktop", "downloads"), set target_path to that string EXACTLY (e.g. "desktop").
+20. MULTI-TURN CONTEXT: When executing a task after asking a clarification question (e.g., user answers "which folder?"), you MUST reconstruct the entire task JSON including ALL original context (e.g., target_path, folder_name, action) from the previous turns in the new task.
+21. "clean disk", "free up space", "clean temp", "clean cache", "janitor", "clean system" → action: "janitor_clean", command: specific target or "safe cache and temp cleanup", summary: "Run ARIA Janitor system cleanup".
+22. "activate voice", "talk to me", "i wanna talk to u" → action: "start_voice_assistant"
+23. "stop voice", "close voice" → action: "stop_voice_assistant"
 
 ALLOWED ACTIONS:
 create_file_folder | delete_folder | delete_file | close_window | open_app | minimize_all |
 play_youtube | play_spotify | web_search | take_screenshot | list_files |
 list_windows | set_memory_trigger | volume_control | create_zip |
 convert_to_pdf | gui_click | gui_type | whatsapp_message | media_control |
-dev_task | cert_workflow | list_projects
+dev_task | cert_workflow | list_projects | janitor_clean | start_voice_assistant | stop_voice_assistant
+
 
 OUTPUT FORMAT — return ONLY valid JSON, no markdown wrapper, no extra text:
 
@@ -84,9 +92,11 @@ Actions (commands, file ops, app launches, searches):
 {{"is_chat": false, "chat_reply": null, "tasks": [{{"action": "allowed_action", "target_path": "string or null", "folder_name": "string or null", "file_name": "filename.ext or null", "file_content": "content or null", "command": "search term / app name / trigger phrase or null", "summary": "One-line description", "risk_level": "LOW or HIGH"}}]}}
 
 EXAMPLES:
-
 User: "Hi"
-{{"is_chat": true, "chat_reply": "Hey! I'm Aria, your desktop assistant. What can I do for you?", "tasks": []}}
+{{"is_chat": true, "chat_reply": "Hey, what's up?", "tasks": []}}
+
+User: "how's it going"
+{{"is_chat": true, "chat_reply": "Pretty good! What are we working on?", "tasks": []}}
 
 User: "open youtube"
 {{"is_chat": false, "chat_reply": null, "tasks": [{{"action": "play_youtube", "target_path": null, "folder_name": null, "file_name": null, "file_content": null, "command": "", "summary": "Open YouTube homepage", "risk_level": "LOW"}}]}}
@@ -113,13 +123,13 @@ User: "convert report.docx to pdf"
 {{"is_chat": false, "chat_reply": null, "tasks": [{{"action": "convert_to_pdf", "target_path": "report.docx", "folder_name": null, "file_name": null, "file_content": null, "command": null, "summary": "Convert report.docx to PDF", "risk_level": "LOW"}}]}}
 
 User: "send whatsapp to mummy"
-{{"is_chat": true, "chat_reply": "Sure! What message would you like to send to Mummy?", "tasks": []}}
+{{"is_chat": true, "chat_reply": "What do you want to say to her?", "tasks": []}}
 
 User: "Message Mummy on WhatsApp Hi"
 {{"is_chat": false, "chat_reply": null, "tasks": [{{"action": "whatsapp_message", "target_path": null, "folder_name": null, "file_name": null, "file_content": "Hi", "command": "Mummy", "summary": "Send WhatsApp to Mummy", "risk_level": "LOW"}}]}}
 
 User: "write me a python hello world"
-{{"is_chat": true, "chat_reply": "Here you go!\\n```python\\nprint('Hello, World!')\\n```", "tasks": []}}
+{{"is_chat": true, "chat_reply": "Here you go:\n```python\nprint('Hello, World!')\n```", "tasks": []}}
 
 User: "remind me to drink water when I say thirsty"
 {{"is_chat": false, "chat_reply": null, "tasks": [{{"action": "set_memory_trigger", "target_path": null, "folder_name": null, "file_name": null, "file_content": null, "command": "thirsty", "summary": "Remind user to drink water", "risk_level": "LOW"}}]}}
@@ -130,7 +140,6 @@ User: "take a screenshot"
 
 
 # ─── Robust JSON sanitiser ───────────────────────────────────────────
-
 def _sanitise_raw_json(text: str) -> str:
     if "```json" in text:
         text = text.split("```json", 1)[1].split("```", 1)[0].strip()
@@ -173,8 +182,8 @@ def _sanitise_raw_json(text: str) -> str:
                 result.append(ch)
         else:
             result.append(ch)
-    text = "".join(result)
 
+    text = "".join(result)
     text = re.sub(r",\s*([}\]])", r"\1", text)
     return text
 
@@ -194,20 +203,21 @@ def clean_json_response(raw_text: str) -> dict:
     action_m = re.search(r'"action"\s*:\s*"([^"]+)"', text)
     if action_m:
         action = action_m.group(1)
+
         def get_val(key):
             m = re.search(rf'"{key}"\s*:\s*(?:"((?:\\"|[^"])*)"|null|None)', text, re.DOTALL)
             return m.group(1) if m and m.group(1) else None
 
-        target_path = get_val("target_path")
-        folder_name = get_val("folder_name")
-        file_name   = get_val("file_name")
-        command     = get_val("command")
-        
+        target_path  = get_val("target_path")
+        folder_name  = get_val("folder_name")
+        file_name    = get_val("file_name")
+        command      = get_val("command")
+
         file_content = None
         fc_m = re.search(r'"file_content"\s*:\s*"(.*?)"\s*,\s*"(?:command|summary|risk_level)"\s*:', text, re.DOTALL)
         if fc_m:
             file_content = fc_m.group(1).replace('\\"', '"').replace('\\n', '\n')
-            
+
         return {
             "is_chat": False,
             "chat_reply": None,
@@ -241,14 +251,13 @@ def clean_json_response(raw_text: str) -> dict:
 
 
 def _verify_code_block_integrity(reply: str) -> str:
-    opens  = reply.count("```")
+    opens = reply.count("```")
     if opens % 2 != 0:
         reply += "\n```\n⚠️ *(Response was truncated — code block closed automatically)*"
     return reply
 
 
 # ─── Local Ollama query ───────────────────────────────────────────────────────
-
 async def query_local_ollama(
     user_text: str, user_id: int = None, model_name: str = LOCAL_MODEL
 ) -> dict:
@@ -261,7 +270,7 @@ async def query_local_ollama(
         "keep_alive": -1,
         "options": {
             "num_predict": 600,
-            "num_ctx":     4096,   # system prompt alone is ~1000 tokens — 1536 was cutting it off
+            "num_ctx":     4096,
             "temperature": 0.0,
             "num_thread":  6
         }
@@ -272,10 +281,8 @@ async def query_local_ollama(
             result = resp.json()
             raw    = result.get("response", "{}")
             parsed = clean_json_response(raw)
-
             if parsed.get("is_chat") and parsed.get("chat_reply"):
                 parsed["chat_reply"] = _verify_code_block_integrity(parsed["chat_reply"])
-
             return parsed
     except Exception as e:
         return {
@@ -286,7 +293,6 @@ async def query_local_ollama(
 
 
 # ─── Cloud Gemini query ───────────────────────────────────────────────────────
-
 async def query_cloud_gemini(user_text: str, user_id: int = None, mode: str = "CLOUD") -> dict:
     prompt = get_system_prompt(user_id)
     loop   = asyncio.get_running_loop()
@@ -319,12 +325,10 @@ async def query_cloud_gemini(user_text: str, user_id: int = None, mode: str = "C
                     loop.run_in_executor(None, _call_gemini),
                     timeout=20.0
                 )
-
                 parsed = clean_json_response(response.text)
                 if parsed.get("is_chat") and parsed.get("chat_reply"):
                     parsed["chat_reply"] = _verify_code_block_integrity(parsed["chat_reply"])
                 return parsed
-
             except asyncio.TimeoutError:
                 _log.warning("[Gemini] %s / key=...%s timed out after 20s", model_name, str(key)[-6:])
                 continue
@@ -342,7 +346,7 @@ async def query_openrouter(user_text: str, user_id: int = None) -> dict:
     key = os.getenv("OPENROUTER_API_KEY")
     if not key:
         return {"is_chat": True, "chat_reply": "⚠️ OpenRouter API key not configured in .env", "tasks": []}
-    
+
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json"
@@ -356,9 +360,9 @@ async def query_openrouter(user_text: str, user_id: int = None) -> dict:
     }
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+            resp   = await client.post(url, headers=headers, json=payload)
             result = resp.json()
-            raw = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+            raw    = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
             parsed = clean_json_response(raw)
             if parsed.get("is_chat") and parsed.get("chat_reply"):
                 parsed["chat_reply"] = _verify_code_block_integrity(parsed["chat_reply"])
@@ -368,7 +372,6 @@ async def query_openrouter(user_text: str, user_id: int = None) -> dict:
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
-
 async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode: bool = False) -> dict:
     clean = user_text.strip()
     lower = clean.lower()
@@ -382,72 +385,239 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
         return {"is_model_switch": True, "target_mode": "API1"}
     if any(p in lower for p in ["change to api2", "switch to api2", "use api2"]):
         return {"is_model_switch": True, "target_mode": "API2"}
-    if any(p in lower for p in ["change to openrouter", "switch to openrouter", "use openrouter", "change to open router", "switch to open router", "use open router"]):
+    if any(p in lower for p in ["change to openrouter", "switch to openrouter", "use openrouter",
+                                  "change to open router", "switch to open router", "use open router"]):
         return {"is_model_switch": True, "target_mode": "OPENROUTER"}
 
-    # ── Fast-Path: Common Greetings ───────────────────────────────────────
-    if lower in ["hi", "hello", "hey", "yo", "sup", "wake up", "are you there", "are u there", "hi aria", "hey aria"]:
-        return {"is_chat": True, "chat_reply": "Hello! I'm online and ready. What can I do for you today?", "tasks": []}
+
+
+    # ── Fast-Path: Voice Assistant ─────────────────────────────────────────
+    voice_start_phrases = [
+        "activate voice", "talk to me", "i wanna talk to u", "i wanna talk to you",
+        "i want to talk to you", "i want to talk to u", "wanna talk to you", "wanna talk to u",
+        "start voice", "start voice assistant", "launch voice", "launch voice assistant",
+        "open voice", "open voice assistant", "enable voice", "voice mode", "voice assistant"
+    ]
+    if any(p in lower for p in voice_start_phrases):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "start_voice_assistant",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "Launch Aria Voice Assistant",
+                "risk_level": "LOW"
+            }]
+        }
+
+    voice_stop_phrases = [
+        "stop voice", "stop voice assistant", "close voice", "close voice assistant",
+        "kill voice", "disable voice", "exit voice"
+    ]
+    if any(p in lower for p in voice_stop_phrases):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "stop_voice_assistant",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "Stop Aria Voice Assistant",
+                "risk_level": "LOW"
+            }]
+        }
 
     # ── Fast-Path: Open App ───────────────────────────────────────────────
     m = re.match(r"(?:open|launch|start|run)\s+(.+)", lower)
-    if m and not any(k in lower for k in ["youtube", "spotify", "folder", "file", "and", "then", "make", "create", "write", "text", "to text", "message", "send", "router", "openrouter", "api1", "api2", "local", "ollama"]) and len(m.group(1).split()) <= 3:
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "open_app", "command": m.group(1).strip(), "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"Open {m.group(1).strip()}", "risk_level": "LOW"}]}
+
+    if m and not any(k in lower for k in [
+        "youtube", "spotify", "folder", "file", "and", "then", "make", "create",
+        "write", "text", "to text", "message", "send", "router", "openrouter",
+        "api1", "api2", "local", "ollama"
+    ]) and len(m.group(1).split()) <= 3:
+        target_app = m.group(1).strip()
+        memory.set_fact("last_opened_app", target_app)
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "open_app", "command": target_app,
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "summary": f"Open {target_app}", "risk_level": "LOW"
+            }]
+        }
 
     # ── Fast-Path: Close App ──────────────────────────────────────────────
     m = re.match(r"(?:close|quit|exit|kill)\s+(.+)", lower)
     if m:
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "close_window", "command": m.group(1).strip(), "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"Close {m.group(1).strip()}", "risk_level": "LOW"}]}
+        close_target = m.group(1).strip()
+        if close_target in ["it", "this", "that", "the app", "app", "the window", "window", "current window", "active window"]:
+            last_app = memory.get_fact("last_opened_app")
+            if last_app:
+                close_target = last_app
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "close_window", "command": close_target,
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "summary": f"Close {close_target}", "risk_level": "LOW"
+            }]
+        }
+
 
     # ── Fast-Path: Web Builder ────────────────────────────────────────────
-    if any(k in lower for k in ["make me a webpage", "create a website", "build a webpage", "build a website", "make a website", "create a webpage", "make a web page", "create a web page"]):
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "start_web_builder", "risk_level": "LOW", "summary": "Start adaptive web builder flow"}]}
+    if any(k in lower for k in [
+        "make me a webpage", "create a website", "build a webpage", "build a website",
+        "make a website", "create a webpage", "make a web page", "create a web page"
+    ]):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{"action": "start_web_builder", "risk_level": "LOW", "summary": "Start adaptive web builder flow"}]
+        }
 
     # ── Fast-Path: Web Search ─────────────────────────────────────────────
     m = re.match(r"(?:search(?:\s+for)?|google|look up)\s+(.+)", lower)
     if m:
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "web_search", "command": m.group(1).strip(), "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"Search: {m.group(1).strip()}", "risk_level": "LOW"}]}
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "web_search", "command": m.group(1).strip(),
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "summary": f"Search: {m.group(1).strip()}", "risk_level": "LOW"
+            }]
+        }
 
     # ── Fast-Path: YouTube ────────────────────────────────────────────────
     m = re.match(r"(?:play\s+(?:.+?)\s+on\s+youtube|open\s+youtube\s+(?:and\s+)?(?:play|search)\s+(.+)|play\s+youtube\s+(.+))", lower)
-    if not m:
+    if m:
+        yt_q = m.group(1) or m.group(2) or ""
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "play_youtube", "command": yt_q.strip(),
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "summary": f"YouTube: {yt_q.strip()}", "risk_level": "LOW"
+            }]
+        }
+    else:
         m2 = re.match(r"(?:search|play)\s+(.+?)\s+on\s+youtube", lower)
         if m2:
             yt_q = m2.group(1).strip()
-            return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "play_youtube", "command": yt_q, "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"YouTube: {yt_q}", "risk_level": "LOW"}]}
-    elif "youtube" in lower and any(k in lower for k in ["play", "search", "open", "watch"]):
-        yt_q = re.sub(r"(?:play|search|open|watch|on\s+youtube|in\s+youtube|youtube)", "", lower, flags=re.IGNORECASE).strip()
-        if yt_q:
-            return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "play_youtube", "command": yt_q, "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"YouTube: {yt_q}", "risk_level": "LOW"}]}
+            return {
+                "is_chat": False, "chat_reply": None,
+                "tasks": [{
+                    "action": "play_youtube", "command": yt_q,
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "summary": f"YouTube: {yt_q}", "risk_level": "LOW"
+                }]
+            }
+        elif "youtube" in lower and any(k in lower for k in ["play", "search", "open", "watch"]):
+            yt_q = re.sub(r"(?:play|search|open|watch|on\s+youtube|in\s+youtube|youtube)", "", lower, flags=re.IGNORECASE).strip()
+            return {
+                "is_chat": False, "chat_reply": None,
+                "tasks": [{
+                    "action": "play_youtube", "command": yt_q,
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "summary": f"YouTube: {yt_q}", "risk_level": "LOW"
+                }]
+            }
 
     # ── Fast-Path: Spotify ────────────────────────────────────────────────
     if "spotify" in lower:
+        memory.set_fact("last_opened_app", "spotify")
         sp_q = re.sub(r"(?:play|search|open|on\s+spotify|spotify|something|music)", "", lower, flags=re.IGNORECASE).strip()
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "play_spotify", "command": sp_q or "", "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "summary": f"Spotify: {sp_q or 'open'}", "risk_level": "LOW"}]}
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "play_spotify", "command": sp_q or "",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "summary": f"Spotify: {sp_q or 'open'}", "risk_level": "LOW"
+            }]
+        }
+
 
     # ── Fast-Path: Create Folder ──────────────────────────────────────────
     m = re.match(r"create\s+(?:a\s+)?folder\s+(?:called|named|)?\s*['\"]?([a-zA-Z0-9_\-\s]+?)['\"]?\s*(?:on\s+(?:the\s+)?(.+))?$", lower)
     if m:
         fname = m.group(1).strip()
         where = (m.group(2) or "desktop").strip()
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "create_file_folder", "folder_name": fname, "target_path": where, "file_name": None, "file_content": None, "command": None, "summary": f"Create folder {fname}", "risk_level": "LOW"}]}
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "create_file_folder", "folder_name": fname,
+                "target_path": where, "file_name": None, "file_content": None,
+                "command": None, "summary": f"Create folder {fname}", "risk_level": "LOW"
+            }]
+        }
 
     # ── Fast-Path: Delete Folder ──────────────────────────────────────────
     m = re.match(r"delete\s+(?:the\s+)?folder\s+['\"]?([a-zA-Z0-9_\-\s]+?)['\"]?\s*(?:from\s+(?:the\s+)?(.+))?$", lower)
     if m:
         fname = m.group(1).strip()
         where = (m.group(2) or "desktop").strip()
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "delete_folder", "folder_name": fname, "target_path": where, "file_name": None, "file_content": None, "command": None, "summary": f"Delete folder {fname}", "risk_level": "HIGH"}]}
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "delete_folder", "folder_name": fname,
+                "target_path": where, "file_name": None, "file_content": None,
+                "command": None, "summary": f"Delete folder {fname}", "risk_level": "HIGH"
+            }]
+        }
 
     # ── Fast-Path: Memory Trigger ─────────────────────────────────────────
     m = re.match(r"remind\s+me\s+(?:to\s+)?(.+?)\s+when\s+(?:i\s+say\s+)?['\"]?(.+?)['\"]?$", lower)
     if m:
         payload = m.group(1).strip()
         trigger = m.group(2).strip()
-        return {"is_chat": False, "chat_reply": None, "tasks": [{"action": "set_memory_trigger", "command": trigger, "summary": f"Remind: {payload}", "target_path": None, "folder_name": None, "file_name": None, "file_content": None, "risk_level": "LOW"}]}
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "set_memory_trigger", "command": trigger,
+                "summary": f"Remind: {payload}", "target_path": None,
+                "folder_name": None, "file_name": None, "file_content": None, "risk_level": "LOW"
+            }]
+        }
+
+    # ── Fast-Path: Minimize / Desktop / Compound with Screenshot ──────────
+    has_minimize = any(k in lower for k in [
+        "minimize everything", "minimize everyting", "minimize all",
+        "minimize windows", "show desktop", "minimize desktop", "minimize"
+    ])
+    has_screenshot = any(k in lower for k in ["screenshot", "screen shot", "capture screen", "snapshot"])
+
+    if has_minimize and has_screenshot:
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [
+                {
+                    "action": "minimize_all",
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "command": None,
+                    "summary": "Minimize all windows / Show desktop",
+                    "risk_level": "LOW"
+                },
+                {
+                    "action": "take_screenshot",
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "command": None,
+                    "summary": "Capture primary desktop screenshot",
+                    "risk_level": "LOW"
+                }
+            ]
+        }
+
+    if has_minimize and not any(k in lower for k in ["window", "tab", "app", "spotify", "youtube", "browser"]):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "minimize_all",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "Minimize all windows / Show desktop",
+                "risk_level": "LOW"
+            }]
+        }
 
     # ── Fast-Path: Screenshot ─────────────────────────────────────────────
-    if any(k in lower for k in ["screenshot", "screen shot", "capture screen", "snapshot"]):
+    if has_screenshot:
         return {
             "is_chat": False, "chat_reply": None,
             "tasks": [{
@@ -474,11 +644,11 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
 
     # ── Fast-Path: Media commands ─────────────────────────────────────────
     _MEDIA_WORDS = {
-        "play":     "play",   "pause":    "pause",
-        "next":     "next",   "previous": "previous",
-        "prev":     "prev",   "stop":     "stop",
-        "next song": "next",  "prev song": "previous",
-        "skip":     "next",
+        "play":      "play",     "pause":    "pause",
+        "next":      "next",     "previous": "previous",
+        "prev":      "prev",     "stop":     "stop",
+        "next song": "next",     "prev song": "previous",
+        "skip":      "next",
     }
     if lower in _MEDIA_WORDS or lower.rstrip(".") in _MEDIA_WORDS:
         cmd = _MEDIA_WORDS.get(lower, _MEDIA_WORDS.get(lower.rstrip("."), "toggle"))
@@ -493,25 +663,59 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
             }]
         }
 
-    # ── Fast-Path: YouTube text selection ─────────────────────────────────
-    if lower == "scroll down":
+    # ── Fast-Path: YouTube text selection & scroll ─────────────────────────
+    if any(k in lower for k in ["scroll down", "scrool down", "scroll browser", "scroll down youtube"]):
         return {
             "is_chat": False, "chat_reply": None,
             "tasks": [{"action": "youtube_scroll", "summary": "Scroll browser down", "risk_level": "LOW"}]
         }
-    
-    yt_play_match = re.fullmatch(r"play\s+(\d+)", lower)
-    if yt_play_match:
-        return {
-            "is_chat": False, "chat_reply": None,
-            "tasks": [{"action": "youtube_click", "command": yt_play_match.group(1), "summary": f"Click video {yt_play_match.group(1)}", "risk_level": "LOW"}]
-        }
+
+    ordinal_map = {
+        "first": "1", "1st": "1", "one": "1", "1": "1",
+        "second": "2", "2nd": "2", "two": "2", "2": "2",
+        "third": "3", "3rd": "3", "three": "3", "3": "3",
+        "fourth": "4", "4th": "4", "four": "4", "4": "4",
+        "fifth": "5", "5th": "5", "five": "5", "5": "5",
+    }
+    yt_click_match = re.search(r"(?:play|click|select|open|watch)\s+(?:the\s+)?(\d+(?:st|nd|rd|th)?|first|second|third|fourth|fifth)(?:\s+(?:one|video|result|song))?", lower)
+    if yt_click_match and not any(k in lower for k in ["on youtube", "on spotify", "spotify", "playlist"]):
+        raw_num = yt_click_match.group(1).lower()
+        num_str = ordinal_map.get(raw_num, re.sub(r"\D", "", raw_num))
+        if num_str and num_str.isdigit():
+            return {
+                "is_chat": False, "chat_reply": None,
+                "tasks": [{
+                    "action": "youtube_click", "command": num_str,
+                    "summary": f"Click video #{num_str}", "risk_level": "LOW"
+                }]
+            }
+
 
     # ── Fast-Path: List files on desktop ─────────────────────────────────────
     if re.fullmatch(r"(what are the files(?: that are)? on my desktop|list my desktop|show folder contents)", lower):
         return {
             "is_chat": False, "chat_reply": None,
-            "tasks": [{"action": "list_files", "target_path": "desktop", "summary": "List files on desktop", "risk_level": "LOW"}]
+            "tasks": [{
+                "action": "list_files", "target_path": "desktop",
+                "summary": "List files on desktop", "risk_level": "LOW"
+            }]
+        }
+
+    # ── Fast-Path: Janitor Disk Cleanup ──────────────────────────────────────
+    if any(k in lower for k in [
+        "clean disk", "clean my disk", "clean cache", "clear cache",
+        "clean temp", "clear temp", "clean system", "free up space",
+        "run janitor", "janitor clean", "system cleanup"
+    ]):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "janitor_clean",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": "Clean safe caches and temporary files",
+                "summary": "ARIA Janitor System Cleanup",
+                "risk_level": "LOW"
+            }]
         }
 
     # ── Fast-Path: Volume shortcuts ───────────────────────────────────────
@@ -551,7 +755,7 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
 
     # ── Fast-Path: Model Diagnostics ──────────────────────────────────────
     if any(k in lower for k in [
-        "which model", "what model", "current model", "active model", 
+        "which model", "what model", "current model", "active model",
         "what llm", "which llm", "are you on local", "are you local or cloud"
     ]):
         active = (memory.get_fact("active_model_mode") or "CLOUD").upper()
@@ -567,10 +771,29 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
             "tasks": []
         }
 
+    # ── Fast-Path: Abilities / Capabilities questions ─────────────────────
+    if any(k in lower for k in [
+        "what else", "what can you do", "list your abilities", "list abilities",
+        "what are you capable", "your capabilities", "what do you do",
+        "what options", "what can u do", "what else can u do"
+    ]):
+        active = (memory.get_fact("active_model_mode") or "CLOUD").upper()
+        mode_str = f"local ({LOCAL_MODEL})" if active == "LOCAL" else "cloud (Gemini)"
+        return {
+            "is_chat": True,
+            "chat_reply": (
+                "apps, youtube, spotify, web search, screenshots, files, volume, "
+                "whatsapp messages, zip/pdf stuff, disk cleanup, reminders — "
+                f"running on {mode_str} rn. just say what u need"
+            ),
+            "tasks": []
+        }
+
     # ── LLM Routing ───────────────────────────────────────────────────────
+
     if autonomy_mode:
         return {"is_complex": True}
-        
+
     active_mode = memory.get_fact("active_model_mode") or "CLOUD"
     if active_mode == "LOCAL":
         res = await query_local_ollama(clean, user_id)
@@ -582,14 +805,14 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
     if "action" in res and "tasks" not in res:
         action_val = res.get("action")
         res["tasks"] = [{
-            "action":      action_val,
-            "target_path": res.get("target_path"),
-            "folder_name": res.get("folder_name"),
-            "file_name":   res.get("file_name"),
-            "file_content":res.get("file_content"),
-            "command":     res.get("command"),
-            "summary":     res.get("summary", "Execute task"),
-            "risk_level":  res.get("risk_level", "LOW")
+            "action":       action_val,
+            "target_path":  res.get("target_path"),
+            "folder_name":  res.get("folder_name"),
+            "file_name":    res.get("file_name"),
+            "file_content": res.get("file_content"),
+            "command":      res.get("command"),
+            "summary":      res.get("summary", "Execute task"),
+            "risk_level":   res.get("risk_level", "LOW")
         }] if action_val and action_val not in [None, "null", "none"] else []
 
     print(f"[Trace] parse_user_command returning: {res}")

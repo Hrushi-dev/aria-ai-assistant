@@ -88,8 +88,8 @@ Output ONLY valid JSON matching the schema. No prose, no markdown fences.
 """
 
 
-def _extract_json(text: str) -> str:
-    """Strip markdown fences and extract first JSON object from text."""
+def _clean_json_str(text: str) -> str:
+    """Strip fences and repair common malformed JSON formatting."""
     if "```json" in text:
         text = text.split("```json", 1)[1].split("```", 1)[0].strip()
     elif "```" in text:
@@ -97,8 +97,103 @@ def _extract_json(text: str) -> str:
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1:
-        return text[start:end + 1]
-    return text
+        text = text[start:end + 1]
+    import re
+    # Remove trailing commas before } or ]
+    text = re.sub(r',\s*([\]}])', r'\1', text)
+    return text.strip()
+
+
+def _extract_json(text: str) -> str:
+    return _clean_json_str(text)
+
+
+def get_default_safe_plan() -> dict:
+    """Return a reliable, 100% safe cleanup plan if LLM is unavailable or fails."""
+    return {
+        "goal_description": "Safe PC and disk cache maintenance",
+        "actions": [
+            {
+                "summary": "Clear User Temp directory",
+                "risk_level": 1,
+                "requires_confirmation": False,
+                "target_path": r"C:\Users\Dell\AppData\Local\Temp\*",
+                "command": r"Remove-Item -Path '$env:TEMP\*' -Recurse -Force -ErrorAction SilentlyContinue",
+                "estimated_reclaim_gb": 1.5,
+            },
+            {
+                "summary": "Purge Windows SoftwareDistribution Download Cache",
+                "risk_level": 1,
+                "requires_confirmation": False,
+                "target_path": r"C:\Windows\SoftwareDistribution\Download\*",
+                "command": r"Remove-Item -Path 'C:\Windows\SoftwareDistribution\Download\*' -Recurse -Force -ErrorAction SilentlyContinue",
+                "estimated_reclaim_gb": 2.0,
+            },
+            {
+                "summary": "Clean NVIDIA installer and update caches",
+                "risk_level": 1,
+                "requires_confirmation": False,
+                "target_path": r"C:\ProgramData\NVIDIA Corporation\Downloader\*",
+                "command": r"Remove-Item -Path 'C:\ProgramData\NVIDIA Corporation\Downloader\*' -Recurse -Force -ErrorAction SilentlyContinue",
+                "estimated_reclaim_gb": 1.2,
+            },
+            {
+                "summary": "Clear Windows System Temp",
+                "risk_level": 1,
+                "requires_confirmation": False,
+                "target_path": r"C:\Windows\Temp\*",
+                "command": r"Remove-Item -Path 'C:\Windows\Temp\*' -Recurse -Force -ErrorAction SilentlyContinue",
+                "estimated_reclaim_gb": 0.8,
+            },
+        ],
+        "total_estimated_reclaim_gb": 5.5,
+    }
+
+
+async def _call_gemini(prompt: str) -> str:
+    """Call Gemini API with model and key fallback, returning raw text response."""
+    keys = [
+        k for k in [
+            os.getenv("GEMINI_API_KEY"),
+            os.getenv("GEMINI_API_KEY_1"),
+            os.getenv("GEMINI_API_KEY_2"),
+            os.getenv("GEMINI_API_KEY_3"),
+        ] if k
+    ]
+    if not keys:
+        raise EnvironmentError(
+            "No GEMINI_API_KEY found. Set it in aria-janitor/.env or aria-core/.env"
+        )
+    if not _GENAI_AVAILABLE:
+        raise ImportError("google-genai not installed. Run: pip install google-genai")
+
+    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash"]
+
+    last_err = None
+
+    for key in keys:
+        for model in candidate_models:
+            try:
+                client = genai.Client(api_key=key)
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_CONTEXT,
+                        response_mime_type="application/json",
+                        temperature=0.1,
+                        max_output_tokens=2048,
+                    ),
+                )
+
+                if response and response.text:
+                    return response.text
+            except Exception as e:
+                last_err = e
+                continue
+
+    raise RuntimeError(f"All Gemini models/keys failed in Janitor planner: {last_err}")
 
 
 def _validate_plan(plan: dict):
@@ -123,44 +218,10 @@ def _validate_plan(plan: dict):
             action["requires_confirmation"] = expected_confirm  # auto-correct
 
 
-async def _call_gemini(prompt: str) -> str:
-    """Call Gemini API and return raw text response."""
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY_1")
-    if not api_key:
-        raise EnvironmentError(
-            "No GEMINI_API_KEY found. Set it in aria-janitor/.env or aria-core/.env"
-        )
-    if not _GENAI_AVAILABLE:
-        raise ImportError("google-genai not installed. Run: pip install google-genai")
-
-    client = genai.Client(api_key=api_key)
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_CONTEXT,
-            temperature=0.1,
-            max_output_tokens=2048,
-        ),
-    )
-    return response.text
-
-
 async def generate_plan(goal: str) -> dict:
     """
     Convert a plain-English maintenance goal into a structured action plan.
-
-    Parameters
-    ----------
-    goal : str
-        E.g. "Clean up NVIDIA caches and clear Windows Update downloads"
-
-    Returns
-    -------
-    dict
-        Validated plan with 'goal_description', 'actions', and
-        'total_estimated_reclaim_gb' keys.
+    Falls back gracefully to default safe plan on errors.
     """
     prompt = f"""Generate a Windows disk maintenance plan for this goal: "{goal}"
 
@@ -189,30 +250,35 @@ Rules:
 - For inspection steps (risk_level 0), use read-only commands like Get-ChildItem, Get-PSDrive, du.
 - Output ONLY the JSON, no other text."""
 
-    # First attempt
-    raw = await _call_gemini(prompt)
-    json_text = _extract_json(raw)
-
     try:
-        plan = json.loads(json_text)
-        _validate_plan(plan)
-        return plan
-    except Exception as e:
-        # Retry once with error feedback
-        retry_prompt = prompt + (
-            f"\n\nYour previous response failed validation: {e}\n"
-            "Return ONLY the corrected JSON."
-        )
-        raw = await _call_gemini(retry_prompt)
+        raw = await _call_gemini(prompt)
         json_text = _extract_json(raw)
-        plan = json.loads(json_text)
-        _validate_plan(plan)
-        return plan
+        try:
+            plan = json.loads(json_text)
+            _validate_plan(plan)
+            return plan
+        except Exception:
+            retry_prompt = prompt + "\n\nReturn ONLY raw valid RFC8259 JSON, no markdown fences."
+            raw = await _call_gemini(retry_prompt)
+            json_text = _extract_json(raw)
+            plan = json.loads(json_text)
+            _validate_plan(plan)
+            return plan
+    except Exception as e:
+        import logging
+        logging.warning("[Janitor Planner] Gemini planning failed (%s). Using default safe plan.", e)
+        return get_default_safe_plan()
 
 
 def generate_plan_sync(goal: str) -> dict:
-    """Synchronous wrapper for generate_plan (for CLI use)."""
-    return asyncio.run(generate_plan(goal))
+    """Synchronous wrapper for generate_plan (for CLI and daemon use)."""
+    try:
+        return asyncio.run(generate_plan(goal))
+    except Exception as e:
+        import logging
+        logging.warning("[Janitor Planner Sync] Async run failed: %s. Using default safe plan.", e)
+        return get_default_safe_plan()
+
 
 
 # ---------------------------------------------------------------------------

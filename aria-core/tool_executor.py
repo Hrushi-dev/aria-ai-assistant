@@ -10,6 +10,7 @@
 
 import os
 import sys
+import logging
 import shutil
 import time
 import urllib.parse
@@ -130,24 +131,67 @@ def get_open_windows_and_tabs() -> list[str]:
 
 # ─── Window closer ──────────────────────────────────────────────────────────
 
+PROTECTED_WINDOW_KEYWORDS = [
+    "antigravity", "visual studio", "vscode", "code.exe", "cursor",
+    "aria daemon", "powershell", "cmd.exe", "command prompt", "terminal",
+    "task switching", "securityhealthsystray", "ms_webcheckmonitor",
+    "default ime", "program manager", "settings", "windows input experience"
+]
+
 def close_window_or_tab(target_query: str) -> str:
-    query  = target_query.lower().strip()
+    query = (target_query or "").lower().strip()
     closed = []
+
+    pronouns = {"it", "this", "that", "the app", "app", "the window", "window", "current window", "active window", ""}
+    if query in pronouns:
+        try:
+            import memory_store as mem
+            last_app = mem.get_fact("last_opened_app")
+            if last_app and last_app.lower() not in pronouns:
+                query = last_app.lower().strip()
+        except Exception:
+            pass
 
     EnumWindows        = ctypes.windll.user32.EnumWindows
     EnumWindowsProc    = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
     GetWindowText      = ctypes.windll.user32.GetWindowTextW
     GetWindowTextLength= ctypes.windll.user32.GetWindowTextLengthW
+    IsWindowVisible    = ctypes.windll.user32.IsWindowVisible
+    GetForegroundWindow= ctypes.windll.user32.GetForegroundWindow
     PostMessage        = ctypes.windll.user32.PostMessageW
     WM_CLOSE = 0x0010
 
+    # If still a pronoun or empty, target foreground window safely
+    if query in pronouns:
+        fg_hwnd = GetForegroundWindow()
+        if fg_hwnd:
+            length = GetWindowTextLength(fg_hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                GetWindowText(fg_hwnd, buff, length + 1)
+                fg_title = buff.value.strip()
+                if not any(k in fg_title.lower() for k in PROTECTED_WINDOW_KEYWORDS):
+                    PostMessage(fg_hwnd, WM_CLOSE, 0, 0)
+                    return f"🛑 Successfully closed active window: '{fg_title}'"
+                else:
+                    return f"🛡️ Protected window '{fg_title}' cannot be closed automatically."
+
+    def is_match(title_lower: str, q: str) -> bool:
+        if any(k in title_lower for k in PROTECTED_WINDOW_KEYWORDS):
+            return False
+        if len(q) <= 3:
+            return bool(re.search(rf"\b{re.escape(q)}\b", title_lower))
+        return q in title_lower
+
     def foreach_window(hwnd, lParam):
+        if not IsWindowVisible(hwnd):
+            return True
         length = GetWindowTextLength(hwnd)
         if length > 0:
             buff = ctypes.create_unicode_buffer(length + 1)
             GetWindowText(hwnd, buff, length + 1)
             title = buff.value.strip()
-            if title and query in title.lower():
+            if title and is_match(title.lower(), query):
                 PostMessage(hwnd, WM_CLOSE, 0, 0)
                 closed.append(title)
         return True
@@ -158,16 +202,18 @@ def close_window_or_tab(target_query: str) -> str:
 
     app_map = {
         "notepad": "notepad.exe", "calc": "CalculatorApp.exe", "spotify": "Spotify.exe",
-        "brave": "brave.exe", "chrome": "chrome.exe", "opera": "opera.exe", "code": "Code.exe"
+        "brave": "brave.exe", "chrome": "chrome.exe", "opera": "opera.exe", "discord": "Discord.exe"
     }
-    proc = app_map.get(query, f"{query}.exe")
-    res = subprocess.run(
-        f"taskkill /IM {proc} /F", shell=True, capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW
-    )
-    if res.returncode == 0:
-        return f"🛑 Successfully terminated process: '{query}'"
+    if query in app_map or (len(query) >= 4 and query not in pronouns and not any(k in query for k in PROTECTED_WINDOW_KEYWORDS)):
+        proc = app_map.get(query, f"{query}.exe")
+        res = subprocess.run(
+            f"taskkill /IM {proc} /F", shell=True, capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        if res.returncode == 0:
+            return f"🛑 Successfully terminated process: '{query}'"
     return f"⚠️ No active window or process found matching '{target_query}'."
+
 
 
 def minimize_window_or_tab(target_query: str) -> str:
@@ -211,9 +257,47 @@ def handle_system_power(command: str) -> str:
         return "🛑 PC shutting down in 5 seconds."
 
 
+def launch_voice_assistant() -> str:
+
+    import subprocess
+    check = subprocess.run(
+        'powershell "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match \'aria-voice\\\\main.py\' } | Select-Object -ExpandProperty ProcessId"',
+        shell=True, capture_output=True, text=True
+    )
+    pids = [p.strip() for p in check.stdout.strip().split() if p.strip()]
+    if pids:
+        return "🎙️ **Aria Voice Assistant** is already running and listening!"
+
+    python_exe = "D:\\AI-AIS\\venv\\Scripts\\python.exe"
+    voice_script = "D:\\AI-AIS\\aria-voice\\main.py"
+    voice_dir = "D:\\AI-AIS\\aria-voice"
+
+    subprocess.Popen(
+        [python_exe, voice_script],
+        cwd=voice_dir,
+        creationflags=subprocess.CREATE_NEW_CONSOLE
+    )
+    return (
+        "🎙️ **Aria Voice Assistant Started!**\n\n"
+        "• State: *Active & Listening*\n"
+        "• Hearing: *Whisper STT*\n"
+        "• Speech: *Kokoro TTS (af_bella)*\n\n"
+        "Speak into your microphone anytime. Say *'switch to cloud'* or *'switch to local'* to toggle engines, or send *'stop voice'* to exit."
+    )
+
+def stop_voice_assistant() -> str:
+    import subprocess
+    subprocess.run(
+        'powershell "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match \'aria-voice\\\\main.py\' } | Invoke-CimMethod -MethodName Terminate"',
+        shell=True, capture_output=True, text=True
+    )
+    return "🛑 **Aria Voice Assistant stopped.**"
+
+
 # ─── App / protocol launcher ────────────────────────────────────────────────
 
 def launch_app_or_protocol(app_name: str) -> str:
+
     clean_app = re.sub(r"^(open|launch|start|run)\s+", "", app_name, flags=re.IGNORECASE).strip().lower()
 
     # Try resolving it as a folder first (e.g., 'open the folder DOWNLOADS')
@@ -739,6 +823,7 @@ def youtube_visual_search(query: str) -> str:
 
 
 def browser_scroll_and_screenshot() -> str:
+    global youtube_picker_targets
     shot_dir  = DEFAULT_DUMP_DIR
     shot_dir.mkdir(parents=True, exist_ok=True)
     shot_path = shot_dir / "yt_results.png"
@@ -751,29 +836,36 @@ def browser_scroll_and_screenshot() -> str:
             w, h = pyautogui.size()
             pyautogui.moveTo(w // 2, h // 2, duration=0.2)
             pyautogui.click()
-            time.sleep(0.5)
-            pyautogui.scroll(-800)
-            time.sleep(1.2)
-            img = pyautogui.screenshot()
-            img.save(str(shot_path))
+            time.sleep(0.3)
+            pyautogui.scroll(-750)
+            time.sleep(1.0)
+
+            from PIL import ImageGrab, ImageDraw, ImageFont
+            img = ImageGrab.grab(all_screens=False)
+            w, h = img.size
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 60)
+            except Exception:
+                font = ImageFont.load_default()
+
+            youtube_picker_targets.clear()
+            for i in range(1, 4):
+                x = int(w * 0.4)
+                y = int(h * (0.35 + (i - 1) * 0.22))
+                youtube_picker_targets[i] = (x, y)
+                r = 35
+                draw.ellipse((x-r, y-r, x+r, y+r), fill="red", outline="white", width=3)
+                draw.text((x-15, y-25), str(i), fill="white", font=font)
+
+            img.save(str(shot_path), "PNG")
         finally:
             pyautogui.FAILSAFE = old_fs
-    except Exception:
-        try:
-            VK_NEXT = 0x22
-            KEYEVENTF_KEYUP = 0x0002
-            for _ in range(3):
-                ctypes.windll.user32.keybd_event(VK_NEXT, 0, 0, 0)
-                time.sleep(0.1)
-                ctypes.windll.user32.keybd_event(VK_NEXT, 0, KEYEVENTF_KEYUP, 0)
-            time.sleep(1.0)
-            from PIL import ImageGrab
-            img = ImageGrab.grab(all_screens=False)
-            img.save(str(shot_path), "PNG")
-        except Exception as e:
-            return f"⚠️ Scroll failed: {e}"
+    except Exception as e:
+        return f"⚠️ Scroll failed: {e}"
 
     return f"YTPICKER:{shot_path}|scroll"
+
 
 
 # ─── Action alias normalisation ─────────────────────────────────────────────
@@ -899,6 +991,7 @@ def execute_tool(intent: dict) -> str:
         elif action == "minimize_all":
             import pyautogui
             pyautogui.hotkey("win", "d")
+            time.sleep(0.5)
             return "🖥️ Desktop minimized."
 
         elif action == "open_app":
@@ -941,9 +1034,7 @@ def execute_tool(intent: dict) -> str:
                 EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
                 ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
                 import time as _t
-                _t.sleep(0.5)
-                pyautogui.hotkey('ctrl', 'home')
-                _t.sleep(0.5)
+                _t.sleep(0.3)
                 
                 global youtube_picker_targets
                 if num in youtube_picker_targets:
@@ -957,6 +1048,7 @@ def execute_tool(intent: dict) -> str:
                 return f"▶️ Playing video #{num}."
             finally:
                 pyautogui.FAILSAFE = old_fs
+
 
         elif action == "play_spotify":
             return play_spotify_with_autoplay(command or "")
@@ -1169,6 +1261,32 @@ def execute_tool(intent: dict) -> str:
                 finally:
                     pyautogui.FAILSAFE = old_fs
 
+            if cmd_lower in ("play", "pause", "toggle"):
+                import pyautogui
+                EnumWindows = ctypes.windll.user32.EnumWindows
+                EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+                GetWindowText = ctypes.windll.user32.GetWindowTextW
+                GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
+                IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+                yt_hwnds = []
+                def find_yt(hwnd, lParam):
+                    if IsWindowVisible(hwnd) and GetWindowTextLength(hwnd) > 0:
+                        buff = ctypes.create_unicode_buffer(GetWindowTextLength(hwnd) + 1)
+                        GetWindowText(hwnd, buff, len(buff))
+                        if "youtube" in buff.value.lower():
+                            yt_hwnds.append(hwnd)
+                    return True
+                EnumWindows(EnumWindowsProc(find_yt), 0)
+                if yt_hwnds:
+                    try:
+                        ctypes.windll.user32.ShowWindow(yt_hwnds[0], 9)
+                        ctypes.windll.user32.SetForegroundWindow(yt_hwnds[0])
+                        time.sleep(0.15)
+                        pyautogui.press("k")
+                        return "⏯ YouTube play/pause toggled."
+                    except Exception:
+                        pass
+
             _VK = {
                 "play":  0xB3, "pause": 0xB3, "toggle": 0xB3,
                 "next":  0xB0, "prev":  0xB1, "previous": 0xB1,
@@ -1183,6 +1301,7 @@ def execute_tool(intent: dict) -> str:
                       "next": "⏭ Next track", "prev": "⏮ Previous track",
                       "previous": "⏮ Previous track", "stop": "⏹ Stopped"}
             return labels.get(cmd_lower, "⏯ Media key sent.")
+
 
         elif action == "antigravity_orchestrate":
             import asyncio
@@ -1239,12 +1358,84 @@ def execute_tool(intent: dict) -> str:
             except Exception as e:
                 return f"❌ Could not list projects: {e}"
 
+        # ── ARIA System Janitor (Disk Cleanup & Cache Purge) ────────────────────
+        elif action in ("janitor_clean", "system_cleanup"):
+            try:
+                import sys
+                janitor_dir = (Path(__file__).parent.parent / "aria-janitor").resolve()
+                if str(janitor_dir) not in sys.path:
+                    sys.path.insert(0, str(janitor_dir))
+                import planner as _jp
+                import executor as _je
+                import audit_logger as _ja
+
+                goal = (command or file_content or intent.get("summary") or "Clean safe temp caches and purge installer downloads").strip()
+                try:
+                    plan = _jp.generate_plan_sync(goal)
+                except Exception as _plan_err:
+                    import logging
+                    logging.warning("[Janitor] Plan generation failed: %s. Using default safe plan.", _plan_err)
+                    plan = _jp.get_default_safe_plan()
+
+
+                session = _ja.start_session(goal, dry_run=False)
+                results = _je.execute_plan(plan, dry_run=False, auto_approve=True)
+                for r in results:
+                    _ja.log_result(r, session_md_path=session["md_path"])
+                summary_data = _ja.finish_session(session, results)
+
+                reclaimed = summary_data["total_reclaimed_gb"]
+                details = []
+                for r in results:
+                    status = r.status_icon
+                    rec = f"+{r.space_reclaimed_gb:.2f}GB" if r.space_reclaimed_gb else "0GB"
+                    details.append(f"{status} {r.action_summary} ({rec})")
+
+                return (
+                    f"🧹 **Janitor Cleanup Finished!**\n\n"
+                    f"Total Reclaimed: **{reclaimed:.3f} GB**\n"
+                    f"Session Log: `{summary_data.get('log_path', 'saved')}`\n\n"
+                    + "\n".join(details)
+                )
+            except Exception as e:
+                import traceback
+                return f"❌ Janitor cleanup failed: {e}\n{traceback.format_exc()}"
+        elif action in ("start_voice_assistant", "launch_voice_assistant", "voice_assistant"):
+            return launch_voice_assistant()
+
+        elif action in ("stop_voice_assistant", "kill_voice_assistant", "close_voice_assistant"):
+            return stop_voice_assistant()
+
         return f"Action '{action}' recognized but has no execution handler."
+
 
 
     except Exception as e:
         import traceback
-        return f"Execution error:\n{traceback.format_exc()}"
+        tb = traceback.format_exc()
+        logging.error("[Aria] Tool execution error: %s", tb)
+
+        # Translate common errors into user-friendly messages
+        err_str = str(e)
+        if "UnboundLocalError" in err_str or "NameError" in err_str:
+            friendly = "😕 Something went wrong internally — a component wasn't loaded properly. Try again, and if it keeps happening, let Hrushi know."
+        elif "FileNotFoundError" in type(e).__name__ or "No such file" in err_str:
+            friendly = f"📂 Couldn't find that file or folder. Double-check the name and try again."
+        elif "PermissionError" in type(e).__name__ or "Access is denied" in err_str:
+            friendly = "🔒 I don't have permission to do that. The file might be in use or protected."
+        elif "TimeoutError" in type(e).__name__ or "timed out" in err_str.lower():
+            friendly = "⏱️ That took too long and timed out. Try again in a bit."
+        elif "ConnectionError" in type(e).__name__ or "connection" in err_str.lower():
+            friendly = "🌐 Couldn't connect — check your internet or make sure the service is running."
+        elif "ModuleNotFoundError" in type(e).__name__ or "No module named" in err_str:
+            module = err_str.split("'")[1] if "'" in err_str else "unknown"
+            friendly = f"🧩 Missing a required package: '{module}'. Ask Hrushi to install it."
+        elif "zipfile" in err_str.lower() or "zip" in err_str.lower():
+            friendly = f"📦 Something went wrong creating/reading the archive. The file might be corrupted or in use."
+        else:
+            friendly = f"😕 Something went wrong: {err_str[:150]}"
+
+        return f"{friendly}\n\n<i>🔧 Tech detail: {type(e).__name__}: {err_str[:200]}</i>"
 
 
 def _wrap_result(raw_result: str) -> dict:

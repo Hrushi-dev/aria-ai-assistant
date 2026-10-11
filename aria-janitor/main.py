@@ -12,7 +12,13 @@ import sys
 import asyncio
 import argparse
 import subprocess
+import io
 from pathlib import Path
+
+# ── Force UTF-8 stdout/stderr on Windows so rich can render Unicode ──────────
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # Ensure we can import sibling modules
 sys.path.insert(0, str(Path(__file__).parent))
@@ -227,9 +233,15 @@ def main():
     args = parser.parse_args()
 
     if _RICH:
-        console.print(BANNER, style="bold cyan")
+        try:
+            console.print(BANNER, style="bold cyan")
+        except (UnicodeEncodeError, Exception):
+            print("  ARIA System Janitor v1.0")
     else:
-        print(BANNER)
+        try:
+            print(BANNER)
+        except UnicodeEncodeError:
+            print("  ARIA System Janitor v1.0")
 
     if args.history:
         _show_history()

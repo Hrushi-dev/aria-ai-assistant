@@ -22,6 +22,7 @@ import asyncio
 import subprocess
 import threading
 import re
+import shutil
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -113,6 +114,9 @@ async def _plan_edits_with_gemini(project: dict, task: str, source_files: list[d
     except ImportError:
         raise ImportError("google-genai not installed. Run: pip install google-genai")
 
+    import memory_store as memory
+    active_model = memory.get_fact("active_llm_model") or "gemini-3.1-pro"
+
     # Build the source context
     source_context = ""
     for f in source_files:
@@ -151,7 +155,7 @@ Example output format:
     client = genai.Client(api_key=api_key)
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-2.0-flash",
+        model=active_model,
         contents=prompt,
         config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=8192),
     )
@@ -349,6 +353,27 @@ def capture_desktop_screenshot(output_path: Path) -> bool:
     except Exception:
         return False
 
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+
+AGY_PATH = shutil.which("agy") or r"D:\agy\bin\agy.exe"
+
+async def _run_agy_task(project_path: Path, task: str) -> list[str]:
+    """Run agy CLI for the task. Returns list of changed files."""
+    if not os.path.exists(AGY_PATH):
+        raise FileNotFoundError(f"agy CLI not found at {AGY_PATH}")
+    
+    result = await asyncio.to_thread(
+        subprocess.run,
+        [AGY_PATH, task],
+        cwd=str(project_path),
+        capture_output=True, text=True, timeout=120
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"agy failed: {result.stderr}")
+    
+    changed = re.findall(r"(?:edited|created|modified):\s+(\S+)", result.stdout, re.IGNORECASE)
+    return changed
+
 # ── Main orchestrator ─────────────────────────────────────────────────────────
 
 async def run_dev_task(project_name: str, task: str, want_preview: bool = True) -> dict:
@@ -385,33 +410,33 @@ async def run_dev_task(project_name: str, task: str, want_preview: bool = True) 
             "error": "folder_not_found",
         }
 
-    # 2. Read source files
+    # 2. Read source files (for Gemini fallback)
     source_files = _collect_source_files(project_path)
 
-    # 3. Ask Gemini to plan edits
+    # 3. Try agy CLI first, fallback to Gemini
     try:
-        edits = await _plan_edits_with_gemini(project, task, source_files)
-    except Exception as e:
-        return {
-            "success": False,
-            "summary": f"Gemini planning failed: {e}",
-            "patched_files": [],
-            "screenshot_path": None,
-            "error": str(e),
-        }
-
-    if not edits:
-        return {
-            "success": False,
-            "summary": "Gemini returned no edits for this task.",
-            "patched_files": [],
-            "screenshot_path": None,
-            "error": "no_edits",
-        }
-
-    # 4. Apply edits
-    try:
-        patched = apply_edits(project_path, edits)
+        patched = await _run_agy_task(project_path, task)
+    except Exception as agy_err:
+        print(f"agy CLI failed or not available ({agy_err}), falling back to Gemini...")
+        try:
+            edits = await _plan_edits_with_gemini(project, task, source_files)
+            if not edits:
+                return {
+                    "success": False,
+                    "summary": "Gemini returned no edits for this task.",
+                    "patched_files": [],
+                    "screenshot_path": None,
+                    "error": "no_edits",
+                }
+            patched = apply_edits(project_path, edits)
+        except Exception as e:
+            return {
+                "success": False,
+                "summary": f"Gemini planning failed: {e}",
+                "patched_files": [],
+                "screenshot_path": None,
+                "error": str(e),
+            }
     except Exception as e:
         return {
             "success": False,

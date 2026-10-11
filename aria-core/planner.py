@@ -50,7 +50,7 @@ Do not include any other text outside the JSON.
 """
     
     # First attempt
-    resp_text = await generate(prompt)
+    resp_text = await generate(prompt, role="code")
     json_text = _extract_json(resp_text)
     
     try:
@@ -60,7 +60,7 @@ Do not include any other text outside the JSON.
     except Exception as e:
         # Retry once
         retry_prompt = prompt + f"\n\nYour previous response failed validation with this error: {e}\nPlease correct the JSON and return ONLY the valid JSON."
-        resp_text = await generate(retry_prompt)
+        resp_text = await generate(retry_prompt, role="code")
         json_text = _extract_json(resp_text)
         try:
             plan = json.loads(json_text)

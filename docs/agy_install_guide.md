@@ -14,38 +14,38 @@ Right now ARIA uses Gemini to write code edits directly. With `agy` CLI installe
 
 ---
 
-## Step 1 — Install agy CLI
+## Step 1 — Install agy directly to D:
 
-### Option A: npm (Recommended)
+Google has transitioned to a native binary for the `agy` CLI, so it's no longer installed via npm.
+
+Run this in PowerShell to install it directly to `D:\agy` (keeping your C: drive completely clean):
 ```powershell
-npm install -g @google/antigravity
+# Set the custom installation directory
+$env:AGY_INSTALL_DIR = "D:\agy"
+
+# Run the official installer script
+irm https://antigravity.google/cli/install.ps1 | iex
 ```
-Then verify:
+
+After installation, add it to your PATH:
+```powershell
+$oldPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+[Environment]::SetEnvironmentVariable("PATH", "$oldPath;D:\agy\bin", "User")
+```
+
+Restart your terminal and verify:
 ```powershell
 agy --version
 ```
 
-### Option B: Download binary from Google
-1. Go to: **https://antigravity.google/download**
-2. Download the Windows binary (`agy-win.exe`)
-3. Rename to `agy.exe` and move to `C:\Users\Dell\AppData\Local\Programs\agy\`
-4. Add that folder to your PATH:
-```powershell
-$oldPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-[Environment]::SetEnvironmentVariable("PATH", "$oldPath;C:\Users\Dell\AppData\Local\Programs\agy", "User")
-```
-5. Restart your terminal and verify: `agy --version`
-
 ---
 
-## Step 2 — Authenticate
+## Step 2 — Authenticate & Setup
 
 ```powershell
-agy auth login
+agy
 ```
-Follow the browser prompts to log in with your Google account (same account you use for AI Studio).
-
----
+On your very first run, `agy` will launch its interactive setup (TUI) right in your terminal. It will guide you to log in with your Google account and set up your preferences.
 
 ## Step 3 — Test it
 

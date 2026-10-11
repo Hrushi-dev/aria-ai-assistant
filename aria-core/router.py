@@ -40,7 +40,7 @@ def _prune_for_local(prompt: str, history: list):
         prompt = prompt[:7997] + "..."
     return prompt, pruned_history
 
-async def generate(prompt: str, history: list = None, image_path: str = None, engine_override: str = None) -> str:
+async def generate(prompt: str, history: list = None, image_path: str = None, engine_override: str = None, role: str = "nlp") -> str:
     """
     Respects the user's active model mode and does NOT automatically fallback.
     If the model hits a rate limit or exhausts tokens, it throws a RouterError.
@@ -60,7 +60,16 @@ async def generate(prompt: str, history: list = None, image_path: str = None, en
 
     loop = asyncio.get_running_loop()
     engine = engines_to_try[0]
-    client = _get_engine_client(engine)
+    
+    if engine == "LOCAL":
+        model_map = {
+            "quick": "qwen2.5:3b",
+            "nlp": "qwen2.5:7b",
+            "code": "qwen2.5-coder:7b"
+        }
+        client = OllamaClient(model_map.get(role, "qwen2.5:7b"))
+    else:
+        client = _get_engine_client(engine)
     
     if not client:
         raise RouterError(f"Engine {engine} is missing config/key.")

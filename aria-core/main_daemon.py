@@ -6,6 +6,11 @@ import uuid
 import re
 import asyncio
 import logging
+import traceback
+import sys
+import subprocess
+import html
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatAction
@@ -74,6 +79,72 @@ def _truncate(text: str, limit: int = _MAX_TG_LEN) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 40] + "\n\n⚠️ *(message truncated — too long)*"
+
+
+async def _send_chat_error(context, chat_id: int, placeholder_msg_id: int | None, error: Exception, stage: str = "Execution"):
+    """
+    Hermes-style diagnostic alert sent directly to Telegram chat.
+    Escapes all HTML entities to avoid parsing failures and provides clear diagnostics.
+    """
+    tb = traceback.format_exc()
+    escaped_tb = html.escape(tb[-2500:] if len(tb) > 2500 else tb)
+    escaped_err = html.escape(str(error))
+    active_mode = memory.get_fact("active_model_mode") or "CLOUD"
+    active_model = memory.get_fact("active_llm_model") or "gemini-2.5-flash"
+
+    hint = "💡 <b>Tip:</b> Check <code>/status</code> for engine health or <code>/logs</code> for details."
+    err_lower = str(error).lower()
+    if "ollama" in err_lower or "connection refused" in err_lower or "11434" in err_lower:
+        hint = "💡 <b>Tip:</b> Ollama is unreachable on localhost:11434. Start Ollama (`ollama serve`) or run <code>/switch cloud</code>."
+    elif "quota" in err_lower or "429" in err_lower or "rate limit" in err_lower:
+        hint = "💡 <b>Tip:</b> LLM quota or rate-limit hit. Run <code>/switch local</code> for Ollama or <code>/switch openrouter</code>."
+    elif "not found" in err_lower or "404" in err_lower:
+        hint = "💡 <b>Tip:</b> Model name not recognized. Use <code>/model gemini-2.5-flash</code> or <code>/switch local</code>."
+    elif "permission" in err_lower or "access denied" in err_lower:
+        hint = "💡 <b>Tip:</b> Permission denied. Run terminal as Administrator if performing privileged disk tasks."
+
+    error_text = (
+        f"🚨 <b>Aria Diagnostic Alert — {stage} Error</b>\n"
+        f"<code>{'═'*32}</code>\n"
+        f"⚙️ <b>Engine:</b> <code>{active_mode}</code> | <b>Model:</b> <code>{active_model}</code>\n"
+        f"⚠️ <b>Error:</b> <code>{escaped_err[:300]}</code>\n\n"
+        f"<b>Traceback:</b>\n<pre>{escaped_tb}</pre>\n\n"
+        f"{hint}"
+    )
+
+    sent = False
+    if placeholder_msg_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=placeholder_msg_id,
+                text=error_text,
+                parse_mode=ParseMode.HTML
+            )
+            sent = True
+        except Exception:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=placeholder_msg_id,
+                    text=f"🚨 [Error in {stage}]\n{str(error)}\n\nTraceback:\n{tb[-1500:]}\n\n{hint}"
+                )
+                sent = True
+            except Exception:
+                pass
+
+    if not sent:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=error_text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🚨 [Error in {stage}]\n{str(error)}\n\nTraceback:\n{tb[-1500:]}"
+            )
 
 
 async def _send_result(context, chat_id: int, message_id: int, result: str):
@@ -224,30 +295,74 @@ async def terminate_orchestrator(update: Update, context: ContextTypes.DEFAULT_T
     if update.effective_user.id != ALLOWED_USER_ID:
         return
         
+    try:
+        import antigravity_orchestrator
+        antigravity_orchestrator.stop_orchestration()
+    except Exception as e:
+        logging.error("Error stopping orchestrator: %s", e)
+
     # Force reset the active state
     memory.set_fact("ag_orchestrator_active", "False")
     memory.set_fact("waiting_for_orchestrator_feedback", None)
-    
-    # Clear the instruction queue
     memory.set_fact("ag_orchestrator_instructions", "[]")
     
-    await update.message.reply_text("🛑 **Emergency Stop:** Orchestration session terminated and state reset.", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("🛑 <b>Emergency Stop:</b> Antigravity agy process and all background tasks terminated.", parse_mode=ParseMode.HTML)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER_ID:
         return
     current_mode = memory.get_fact("active_model_mode") or "CLOUD"
+    active_model = memory.get_fact("active_llm_model") or "gemini-2.5-flash"
     user_name    = memory.get_fact("user_name") or "there"
     await update.message.reply_text(
         f"⚡ <b>Aria Core is Online.</b>\n"
         f"• Hello, <b>{user_name}</b>!\n"
         f"• Active Engine: <code>{current_mode}</code>\n"
-        f"• Memory &amp; Sandbox: <i>Active</i>",
+        f"• Active Model: <code>{active_model}</code>\n"
+        f"• Memory &amp; Sandbox: <i>Active</i>\n\n"
+        f"<b>Hermes Assistant Controls:</b>\n"
+        f"• <code>/voice</code> — Launch desktop voice assistant (talk to Aria)\n"
+        f"• <code>/stopvoice</code> — Stop desktop voice assistant\n"
+        f"• <code>/status</code> — System, disk &amp; engine health\n"
+        f"• <code>/clean</code> — ARIA System Janitor disk cleaner\n"
+        f"• <code>/switch</code> — Switch between cloud, local, groq, openrouter\n"
+        f"• <code>/model &lt;name&gt;</code> — Set active model name\n"
+        f"• <code>/debug &lt;text&gt;</code> — Test intent parser AST &amp; debug output\n"
+        f"• <code>/logs</code> — Tail recent background logs\n"
+        f"• <code>/ping</code> — Liveness pong test",
         parse_mode=ParseMode.HTML
     )
 
+async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    from tool_executor import launch_voice_assistant
+    result = await asyncio.get_running_loop().run_in_executor(None, launch_voice_assistant)
+    await update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
+
+async def cmd_stop_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    from tool_executor import stop_voice_assistant
+    result = await asyncio.get_running_loop().run_in_executor(None, stop_voice_assistant)
+    await update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
+
+async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    args = context.args
+    if not args:
+        current = memory.get_fact("active_llm_model") or "gemini-2.5-flash"
+        await update.message.reply_text(f"Current model: {current}\nUse /model <model_name> to change it.")
+        return
+    
+    new_model = args[0]
+    memory.set_fact("active_llm_model", new_model)
+    await update.message.reply_text(f"✅ Model changed to: {new_model}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
     if user_id != ALLOWED_USER_ID or update.effective_chat.type != "private":
         return
@@ -256,19 +371,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lower_text = user_text.lower()
     
     # Hard-route coding tasks directly to the IDE orchestrator
+    # Only triggers when there's clear coding/building intent, not casual mentions
     trigger_keywords = ["website", "build a", "make a", "code", "app", "pomodoro"]
-    if any(keyword in lower_text for keyword in trigger_keywords) and len(user_text) < 100:
-        await update.message.reply_text("🚀 Hard-routing directly to Antigravity IDE...")
+    # Exclude phrases that look like questions, opinions, or unrelated commands
+    routing_exclusions = [
+        "what do you think", "what about", "do you know", "have you heard",
+        "do you use", "opinion", "thoughts on", "recommend", "review",
+        "open ", "close ", "launch ", "start ", "stop ", "delete ", "remove ",
+        "zip ", "compress", "list ", "search ", "play ", "volume", "mute",
+        "whatsapp", "send ", "screenshot", "minimize", "clean", "janitor",
+        "voice", "talk to", "remember", "remind", "switch to", "change to",
+        "?",  # Questions are almost never coding tasks
+    ]
+    has_coding_trigger = any(keyword in lower_text for keyword in trigger_keywords)
+    has_exclusion = any(excl in lower_text for excl in routing_exclusions)
+    if has_coding_trigger and not has_exclusion and len(user_text) < 100:
+        await update.message.reply_text("🚀 Routing to Antigravity agy engine in terminal (Gemini 3.8 Flash)...")
         
         # Force state to active
         memory.set_fact("ag_orchestrator_active", "True")
         memory.set_fact("ag_orchestrator_instructions", "[]")
+
         
         # Fire orchestrator and exit handler so LLM doesn't do a web search
         intent = {"summary": user_text, "folder_name": "WebProject"}
         import antigravity_orchestrator
         asyncio.create_task(antigravity_orchestrator.run_orchestration(intent))
         return
+
 
     # Webpage Builder multi-turn checks
     if user_id in webpage_pending:
@@ -478,7 +608,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"[Trace] Entered fallback branch. is_chat={is_chat}, len(tasks)={len(tasks)}")
             final_reply = chat_reply
             if not final_reply:
-                final_reply = "I'm listening, but I didn't quite catch what you want me to do." if not is_chat else "Hey! How can I help you today?"
+                final_reply = "Didn't catch that, say it again?" if not is_chat else "yeah?"
             print(f"[Trace] final_reply resolved to: {final_reply}")
 
             if "whatsapp" in lower_text and ("what" in final_reply.lower() or "message" in final_reply.lower() or "?" in final_reply):
@@ -602,15 +732,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error("Unhandled error processing user message: %s", e, exc_info=True)
-        try:
-            await context.bot.edit_message_text(
-                f"⚠️ <b>Execution Error:</b> <code>{str(e)[:150]}</code>",
-                chat_id=update.effective_chat.id,
-                message_id=placeholder_msg.message_id,
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
+        await _send_chat_error(
+            context,
+            update.effective_chat.id,
+            placeholder_msg.message_id if placeholder_msg else None,
+            e,
+            stage="Execution Pipeline"
+        )
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -678,11 +806,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return True
                     EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
                     ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
-                    _t.sleep(0.5)
-                    pyautogui.hotkey('ctrl', 'home')
-                    _t.sleep(0.5)
+                    _t.sleep(0.3)
                     
                     if num in youtube_picker_targets:
+
                         x, y = youtube_picker_targets[num]
                     else:
                         x = int(w * 0.4)
@@ -855,11 +982,271 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_approvals.pop(task_id, None)
 
 
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a live health report of all subsystems."""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+
+    import os
+    mode    = memory.get_fact("active_model_mode") or "CLOUD"
+    model   = memory.get_fact("active_llm_model") or "gemini-2.5-flash"
+    user_nm = memory.get_fact("user_name") or "(not set)"
+
+    # Check Ollama reachability
+    try:
+        import httpx
+        r = httpx.get("http://localhost:11434/api/tags", timeout=3)
+        ollama_status = f"✅ Online ({len(r.json().get('models', []))} model(s) loaded)"
+    except Exception as e:
+        ollama_status = f"❌ Offline — {type(e).__name__}"
+
+    # Check Gemini key
+    gemini_key  = os.getenv("GEMINI_API_KEY_1")
+    groq_key    = os.getenv("GROQ_API_KEY")
+    openr_key   = os.getenv("OPENROUTER_API_KEY")
+
+    # Disk info
+    try:
+        import shutil
+        c = shutil.disk_usage("C:/")
+        d = shutil.disk_usage("D:/")
+        disk_info = (
+            f"C: {c.free // (1024**3):.0f} GB free / {c.total // (1024**3):.0f} GB\n"
+            f"D: {d.free // (1024**3):.0f} GB free / {d.total // (1024**3):.0f} GB"
+        )
+    except Exception:
+        disk_info = "(could not read)"
+
+    orch_active = memory.get_fact("ag_orchestrator_active") or "False"
+
+    await update.message.reply_text(
+        f"<b>⚡ Aria System Status</b>\n"
+        f"<code>{'─'*30}</code>\n"
+        f"🧠 <b>Mode:</b> <code>{mode}</code>\n"
+        f"🤖 <b>Model:</b> <code>{model}</code>\n"
+        f"👤 <b>User:</b> <code>{user_nm}</code>\n"
+        f"<code>{'─'*30}</code>\n"
+        f"🔑 <b>Gemini Key 1:</b> {'✅ Set' if gemini_key else '❌ Missing'}\n"
+        f"⚡ <b>Groq Key:</b> {'✅ Set' if groq_key else '❌ Missing'}\n"
+        f"🌐 <b>OpenRouter Key:</b> {'✅ Set' if openr_key else '❌ Missing'}\n"
+        f"💻 <b>Ollama:</b> {ollama_status}\n"
+        f"<code>{'─'*30}</code>\n"
+        f"💾 <b>Disk:</b>\n<code>{disk_info}</code>\n"
+        f"🔧 <b>Orchestrator:</b> {'🟢 Active' if orch_active == 'True' else '⚫ Idle'}\n"
+        f"🕐 <b>Time:</b> <code>{datetime.now().strftime('%H:%M:%S')}</code>",
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test the intent parser directly and show full trace output."""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    args = context.args
+    test_input = " ".join(args) if args else "hi"
+
+    msg = await update.message.reply_text(
+        f"🔍 <b>Debug run for:</b> <code>{test_input}</code>\n⏳ Parsing...",
+        parse_mode=ParseMode.HTML
+    )
+    try:
+        intent = await parse_user_command(test_input, user_id=update.effective_user.id)
+        import json
+        result_str = json.dumps(intent, indent=2, ensure_ascii=False)
+        await context.bot.edit_message_text(
+            f"🔍 <b>Debug:</b> <code>{test_input}</code>\n\n"
+            f"<pre>{result_str[:3500]}</pre>",
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        await context.bot.edit_message_text(
+            f"❌ <b>Parser Error:</b>\n<pre>{tb[:3000]}</pre>",
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            parse_mode=ParseMode.HTML
+        )
+
+
+async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the last 30 lines of the daemon's log file."""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    log_path = os.path.join(os.path.dirname(__file__), "..", "aria-sandbox", "aria_daemon.log")
+    log_path = os.path.abspath(log_path)
+    if not os.path.exists(log_path):
+        await update.message.reply_text(f"⚠️ No log file found at:\n<code>{log_path}</code>", parse_mode=ParseMode.HTML)
+        return
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        tail = "".join(lines[-35:])
+        await update.message.reply_text(
+            f"📋 <b>Last log lines:</b>\n<pre>{tail[:3500]}</pre>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not read log: {e}")
+
+
+async def cmd_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quick engine switcher. Usage: /switch cloud|local|groq|openrouter"""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    args = context.args
+    if not args:
+        current = memory.get_fact("active_model_mode") or "CLOUD"
+        await update.message.reply_text(
+            f"Current engine: <code>{current}</code>\n\n"
+            f"Usage: <code>/switch cloud</code> | <code>/switch local</code> | "
+            f"<code>/switch groq</code> | <code>/switch openrouter</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    mode_map = {
+        "cloud": "API1", "api1": "API1", "api2": "API2",
+        "local": "LOCAL", "ollama": "LOCAL",
+        "groq": "GROQ", "openrouter": "OPENROUTER", "or": "OPENROUTER",
+    }
+    new_mode = mode_map.get(args[0].lower())
+    if not new_mode:
+        await update.message.reply_text(f"❌ Unknown mode: <code>{args[0]}</code>", parse_mode=ParseMode.HTML)
+        return
+    memory.set_fact("active_model_mode", new_mode)
+    await update.message.reply_text(f"✅ Switched to: <code>{new_mode}</code>", parse_mode=ParseMode.HTML)
+
+
+async def cmd_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run ARIA System Janitor safe disk cleanup. Usage: /clean or /clean <goal>"""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    args = context.args
+    goal = " ".join(args) if args else "Clean safe temp caches, Windows update staging, and NVIDIA caches"
+
+    msg = await update.message.reply_text(
+        f"🧹 <b>ARIA Janitor Starting...</b>\n"
+        f"🎯 <b>Goal:</b> <code>{html.escape(goal)}</code>\n"
+        f"⏳ Analyzing disk space and computing safe cleanup plan...",
+        parse_mode=ParseMode.HTML
+    )
+
+    try:
+        import sys
+        from pathlib import Path
+        janitor_dir = (Path(__file__).parent.parent / "aria-janitor").resolve()
+        if str(janitor_dir) not in sys.path:
+            sys.path.insert(0, str(janitor_dir))
+        import planner as _jp
+        import executor as _je
+        import audit_logger as _ja
+
+        # 1. Generate plan
+        plan = await _jp.generate_plan(goal)
+        actions = plan.get("actions", [])
+        total_est = plan.get("total_estimated_reclaim_gb", 0)
+
+        lines = [f"📋 <b>Janitor Action Plan:</b>\n<i>{html.escape(plan.get('goal_description', ''))}</i>\n"]
+        for i, a in enumerate(actions, 1):
+            r = a.get("risk_level", 0)
+            rec = a.get("estimated_reclaim_gb", 0)
+            rec_str = f" (~{rec:.2f} GB)" if rec else ""
+            lines.append(f"{i}. [Risk {r}] {html.escape(a.get('summary', ''))}{rec_str}")
+        lines.append(f"\n<b>Est. Reclaim:</b> ~{total_est:.2f} GB\n⚡ <i>Executing safe actions...</i>")
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=msg.message_id,
+            text="\n".join(lines)[:3500],
+            parse_mode=ParseMode.HTML
+        )
+
+        # 2. Execute plan
+        session = _ja.start_session(goal, dry_run=False)
+        results = await asyncio.get_running_loop().run_in_executor(
+            None, _je.execute_plan, plan, False, 60, True
+        )
+        for r in results:
+            _ja.log_result(r, session_md_path=session["md_path"])
+        summary_data = _ja.finish_session(session, results)
+
+        total_reclaimed = summary_data["total_reclaimed_gb"]
+
+        # Current disk free
+        import shutil
+        c = shutil.disk_usage("C:/")
+        d = shutil.disk_usage("D:/")
+
+        res_lines = [
+            f"✅ <b>Janitor Maintenance Complete!</b>\n",
+            f"💾 <b>Total Reclaimed:</b> <b>+{total_reclaimed:.3f} GB</b>",
+            f"📊 <b>Drive Status Now:</b>",
+            f"• C: {c.free // (1024**3)} GB free / {c.total // (1024**3)} GB",
+            f"• D: {d.free // (1024**3)} GB free / {d.total // (1024**3)} GB\n",
+            f"<b>Actions Executed:</b>"
+        ]
+        for r in results:
+            rec = f"+{r.space_reclaimed_gb:.2f}GB" if r.space_reclaimed_gb else "—"
+            res_lines.append(f"{r.status_icon} {html.escape(r.action_summary)} | {rec}")
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="\n".join(res_lines)[:3500],
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await _send_chat_error(context, update.effective_chat.id, msg.message_id, e, stage="Janitor Cleanup")
+
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ping — test that the bot is alive and responding."""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+    await update.message.reply_text("🏓 Pong! Aria is alive and responding.")
+
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(msg="Exception while handling update:", exc_info=context.error)
+    """Send full error tracebacks to the Telegram chat so you can debug in-chat."""
+    tb_str = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))
+    logging.error("Exception while handling an update:\n%s", tb_str)
+
+    # Try to send to the user's chat
+    try:
+        if isinstance(update, Update) and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"🚨 <b>Unhandled Error:</b>\n<pre>{tb_str[:3500]}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+        elif ALLOWED_USER_ID:
+            await context.bot.send_message(
+                chat_id=ALLOWED_USER_ID,
+                text=f"🚨 <b>Background Error:</b>\n<pre>{tb_str[:3500]}</pre>",
+                parse_mode=ParseMode.HTML
+            )
+    except Exception as send_err:
+        logging.error("Could not send error to Telegram: %s", send_err)
 
 
 if __name__ == "__main__":
+    # ── Configure file logging so errors survive between restarts ──────────────
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "aria-sandbox")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "aria_daemon.log")
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(logging.INFO)
+
+    if not BOT_TOKEN:
+        logging.critical("TELEGRAM_BOT_TOKEN is not set in .env — cannot start!")
+        sys.exit(1)
+    if not ALLOWED_USER_ID:
+        logging.critical("MY_TELEGRAM_USER_ID is not set — bot will reject ALL messages!")
+
     builder = ApplicationBuilder().token(BOT_TOKEN)
     local_api = os.getenv("TELEGRAM_LOCAL_SERVER") or os.getenv("TELEGRAM_LOCAL_API_URL")
     if local_api:
@@ -875,16 +1262,27 @@ if __name__ == "__main__":
         .pool_timeout(60)
         .build()
     )
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start",     start))
+    app.add_handler(CommandHandler("model",     set_model))
+    app.add_handler(CommandHandler(["voice", "talk"], cmd_voice))
+    app.add_handler(CommandHandler(["stopvoice"], cmd_stop_voice))
     app.add_handler(CommandHandler(["stop", "terminate"], terminate_orchestrator))
+    app.add_handler(CommandHandler("status",    cmd_status))
+    app.add_handler(CommandHandler("debug",     cmd_debug))
+    app.add_handler(CommandHandler("logs",      cmd_logs))
+    app.add_handler(CommandHandler("switch",    cmd_switch))
+    app.add_handler(CommandHandler("ping",      cmd_ping))
+    app.add_handler(CommandHandler(["clean", "janitor"], cmd_clean))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_error_handler(error_handler)
+
     
     # Force-clear any hanging orchestration states on startup
     memory.set_fact("ag_orchestrator_active", "False")
     memory.set_fact("ag_orchestrator_instructions", "[]")
     memory.set_fact("waiting_for_orchestrator_feedback", None)
     
+    logging.info("Aria Autonomous Agent starting... Bot token: ...%s", BOT_TOKEN[-10:])
     print("Aria Autonomous Agent running...")
     app.run_polling(drop_pending_updates=True)
