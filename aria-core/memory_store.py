@@ -100,6 +100,11 @@ def set_fact(key: str, value: str | None):
                         value = excluded.value, 
                         updated_at = CURRENT_TIMESTAMP
                 """, (key.strip(), str(value).strip()))
+    try:
+        from obsidian_bridge import sync_fact_to_obsidian
+        sync_fact_to_obsidian(key.strip(), str(value).strip() if value is not None else None)
+    except Exception:
+        pass
 
 def get_fact(key: str) -> str | None:
     with contextlib.closing(get_db_connection()) as conn:
@@ -118,6 +123,11 @@ def add_message(user_id: int, role: str, message: str):
     with contextlib.closing(get_db_connection()) as conn:
         with conn:
             conn.execute("INSERT INTO history (user_id, role, message) VALUES (?, ?, ?)", (user_id, role, message))
+    try:
+        from obsidian_bridge import sync_message_to_obsidian
+        sync_message_to_obsidian(user_id, role, message)
+    except Exception:
+        pass
 
 def get_recent_history(user_id: int, limit: int = 6) -> str:
     with contextlib.closing(get_db_connection()) as conn:
@@ -147,6 +157,11 @@ def set_trigger(user_id: int, trigger_phrase: str, payload: str):
                 INSERT INTO triggers (user_id, trigger_phrase, payload)
                 VALUES (?, ?, ?)
             """, (user_id, trigger_phrase.strip().lower(), payload.strip()))
+    try:
+        from obsidian_bridge import sync_trigger_to_obsidian
+        sync_trigger_to_obsidian(trigger_phrase.strip().lower(), payload.strip())
+    except Exception:
+        pass
 
 def get_triggers(user_id: int) -> list[dict]:
     with contextlib.closing(get_db_connection()) as conn:

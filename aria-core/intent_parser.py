@@ -80,7 +80,7 @@ create_file_folder | delete_folder | delete_file | close_window | open_app | min
 play_youtube | play_spotify | web_search | take_screenshot | list_files |
 list_windows | set_memory_trigger | volume_control | create_zip |
 convert_to_pdf | gui_click | gui_type | whatsapp_message | media_control |
-dev_task | cert_workflow | list_projects | janitor_clean | start_voice_assistant | stop_voice_assistant
+dev_task | cert_workflow | list_projects | janitor_clean | start_voice_assistant | stop_voice_assistant | sync_obsidian | search_obsidian | read_obsidian_note
 
 
 OUTPUT FORMAT — return ONLY valid JSON, no markdown wrapper, no extra text:
@@ -422,6 +422,52 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
                 "target_path": None, "folder_name": None, "file_name": None,
                 "file_content": None, "command": None,
                 "summary": "Stop Aria Voice Assistant",
+                "risk_level": "LOW"
+            }]
+        }
+
+    # ── Fast-Path: Obsidian Sync & Vault ──────────────────────────────────
+    obsidian_sync_phrases = [
+        "sync obsidian", "sync to obsidian", "export to obsidian", "export memory to obsidian",
+        "transfer memory to obsidian", "transfer memory", "connect obsidian", "connect the database with obsidian",
+        "connect database with obsidian", "connect db with obsidian", "backup to obsidian", "update obsidian vault"
+    ]
+    if any(p in lower for p in obsidian_sync_phrases):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "sync_obsidian",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "Sync Aria SQLite memory into Obsidian Vault",
+                "risk_level": "LOW"
+            }]
+        }
+
+    m_obs_search = re.search(r"(?:search|find)\s+(?:in\s+)?(?:obsidian|my notes|vault)\s+(?:for\s+)?(.+)", lower)
+    if m_obs_search:
+        query = m_obs_search.group(1).strip()
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "search_obsidian",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": query,
+                "summary": f"Search Obsidian vault for '{query}'",
+                "risk_level": "LOW"
+            }]
+        }
+
+    m_obs_read = re.search(r"read\s+(?:obsidian\s+note|note)\s+(.+)", lower)
+    if m_obs_read:
+        note_name = m_obs_read.group(1).strip()
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "read_obsidian_note",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": note_name,
+                "summary": f"Read note '{note_name}' from Obsidian vault",
                 "risk_level": "LOW"
             }]
         }

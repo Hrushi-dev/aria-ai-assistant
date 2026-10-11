@@ -1406,6 +1406,56 @@ def execute_tool(intent: dict) -> str:
         elif action in ("stop_voice_assistant", "kill_voice_assistant", "close_voice_assistant"):
             return stop_voice_assistant()
 
+        # ── Obsidian Integration ───────────────────────────────────────────────
+        elif action in ("sync_obsidian", "export_obsidian", "connect_obsidian"):
+            try:
+                import obsidian_bridge
+                stats = obsidian_bridge.export_all_memory()
+                vault_dir = obsidian_bridge.get_vault_path()
+                return (
+                    "🌌 **Aria Memory Synced to Obsidian!**\n\n"
+                    f"• 👤 **Facts & Profile:** {stats['facts']} items\n"
+                    f"• 💬 **Conversations:** {stats['conversations']} messages exported\n"
+                    f"• ⚡ **Triggers:** {stats['triggers']} proactive triggers\n"
+                    f"• 🛡️ **Audit Logs:** {stats['audit_logs']} security records\n"
+                    f"• 🎯 **Agent Plans:** {stats['plans']} goals\n\n"
+                    f"📁 **Vault Location:** `{vault_dir}`\n"
+                    "Open Obsidian to view your graph and notes!"
+                )
+            except Exception as e:
+                return f"❌ Failed to sync to Obsidian: {e}"
+
+        elif action == "search_obsidian":
+            try:
+                import obsidian_bridge
+                q = (command or file_content or intent.get("summary") or "").strip()
+                if not q:
+                    return "⚠️ Please specify what to search for in Obsidian."
+                matches = obsidian_bridge.search_vault(q, max_results=5)
+                if not matches:
+                    return f"🔍 No notes found in Obsidian matching **'{q}'**."
+                lines = [f"🔍 **Found {len(matches)} Obsidian note(s) matching '{q}':**\n"]
+                for m in matches:
+                    lines.append(f"• 📄 **[[{m['note']}]]** (`{m['rel_path']}`)\n  > {m['snippet']}")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"❌ Failed to search Obsidian: {e}"
+
+        elif action == "read_obsidian_note":
+            try:
+                import obsidian_bridge
+                note_name = (command or file_name or "").strip()
+                if not note_name:
+                    return "⚠️ Please specify which note to read from Obsidian."
+                content = obsidian_bridge.read_note(note_name)
+                if not content:
+                    return f"📂 Note **'{note_name}'** not found in Obsidian vault."
+                if len(content) > 3000:
+                    content = content[:2900] + "\n\n... *(truncated for Telegram)*"
+                return f"📄 **Note: `{note_name}`**\n\n{content}"
+            except Exception as e:
+                return f"❌ Failed to read note from Obsidian: {e}"
+
         return f"Action '{action}' recognized but has no execution handler."
 
 
