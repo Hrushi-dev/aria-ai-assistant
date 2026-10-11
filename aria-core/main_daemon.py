@@ -1367,6 +1367,13 @@ if __name__ == "__main__":
     memory.set_fact("ag_orchestrator_active", "False")
     memory.set_fact("ag_orchestrator_instructions", "[]")
     memory.set_fact("waiting_for_orchestrator_feedback", None)
+
+    # Start UDP port 9 Wake-on-LAN listener for phone WolOn signals
+    try:
+        import remote_alert
+        remote_alert.start_wol_listener()
+    except Exception as e:
+        logging.warning("Could not start WoL listener: %s", e)
     
     logging.info("Aria Autonomous Agent starting... Bot token: ...%s", BOT_TOKEN[-10:])
     print("Aria Autonomous Agent running...")

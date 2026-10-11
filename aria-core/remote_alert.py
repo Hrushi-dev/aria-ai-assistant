@@ -118,12 +118,70 @@ def capture_laptop_screenshot() -> Optional[str]:
     return None
 
 
+def wake_laptop_screen():
+    """Turn on display and wake screen from sleep / screen-off state."""
+    def _wake():
+        try:
+            import ctypes
+            # ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000002 | 0x00000001)
+            # Mouse pulse
+            ctypes.windll.user32.mouse_event(0x0001, 1, 1, 0, 0)
+            ctypes.windll.user32.mouse_event(0x0001, -1, -1, 0, 0)
+            # Shift key pulse
+            ctypes.windll.user32.keybd_event(0x10, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(0x10, 0, 2, 0)
+            # Post monitor power ON
+            HWND_BROADCAST = 0xFFFF
+            WM_SYSCOMMAND = 0x0112
+            SC_MONITORPOWER = 0xF170
+            ctypes.windll.user32.PostMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, -1)
+        except Exception as e:
+            logger.warning(f"[Remote Alert] Screen wake failed: {e}")
+
+    thread = threading.Thread(target=_wake, daemon=True)
+    thread.start()
+
+
+def start_wol_listener(on_wake_callback=None):
+    """
+    Listens for UDP WoL Magic Packets on port 9 in a daemon thread.
+    When a packet from WolOn arrives, automatically wakes the laptop screen and alerts.
+    """
+    def _listener():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", 9))
+            logger.info("[WoL Listener] Listening for wake packets on UDP port 9...")
+            while True:
+                data, addr = sock.recvfrom(1024)
+                if data:
+                    logger.info(f"[WoL Listener] Received wake packet from {addr} ({len(data)} bytes)!")
+                    wake_laptop_screen()
+                    speak_on_laptop("Aria wake signal received from phone.")
+                    show_laptop_toast("⚡ Wake On LAN", f"Packet received from phone ({addr[0]})")
+                    if on_wake_callback:
+                        try:
+                            on_wake_callback(addr)
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.warning(f"[WoL Listener] UDP port 9 listener stopped: {e}")
+
+    t = threading.Thread(target=_listener, daemon=True)
+    t.start()
+
+
 def trigger_laptop_startup_alert() -> Tuple[Dict[str, str], Optional[str]]:
     """
     Fires the combined audio + visual sign on the laptop and captures desktop state.
     Returns:
         (diagnostics_dict, screenshot_path)
     """
+    # 0. Wake physical display if asleep
+    wake_laptop_screen()
+
     # 1. Audible voice alert on laptop speakers
     speak_on_laptop("Aria system online. Remote link established with mobile.")
 
