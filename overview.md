@@ -24,7 +24,7 @@ This is the heart of the Telegram daemon and background processing engine.
 - **`plan.txt`**: **CRITICAL CONTEXT FILE**. Contains the current development roadmap, focusing on fixing GUI automation reliability using a vision verifier, integrating new LLM providers (Groq/OpenRouter), and building Antigravity IDE orchestration.
 - **`antigravity_orchestrator.py`**: Handles automating the Antigravity IDE, launching projects, and managing permission prompts (Feature C in `plan.txt`).
 - **`vision_gateway.py`**: The newly built shared vision-verification module to validate GUI state via cloud vision models before acting (Part 2 in `plan.txt`).
-- **`memory_store.py` & `aria_memory.db`**: SQLite-based persistent memory store for the assistant.
+- **`obsidian_memory.py` & `memory_store.py`**: Pure-Obsidian Markdown memory engine (`D:/HERMES/AriaVault`). Replaces SQLite entirely with real-time 2-way syncing for todos, reminders, facts, notes, and conversation logs.
 - **`tool_executor.py` & `intent_parser.py`**: Core logic for parsing user intents and safely executing tools.
 - **`agent_runtime.py`, `router.py`, `llm_clients.py`**: The inference pipeline and routing logic supporting 4-tier model failovers.
 

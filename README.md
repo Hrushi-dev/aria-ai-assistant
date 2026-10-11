@@ -34,7 +34,7 @@ stop_aria.bat         # stop the daemon
 | Local LLM | qwen2.5:7b via Ollama (~4.5GB VRAM) |
 | Cloud LLM | Gemini 2.5 Flash (google-genai) |
 | Telegram Bot | python-telegram-bot v22 |
-| Memory | SQLite via memory_store.py |
+| Memory | Pure Obsidian Markdown via obsidian_memory.py |
 | PC Control | subprocess, webbrowser, ctypes, nircmd |
 
 ---
@@ -74,6 +74,7 @@ GEMINI_API_KEY_2=optional_second_key
 - 🔊 Neural TTS via Kokoro (sentence streaming)
 - 🔀 Runtime switch between local and cloud LLM
 - 📱 Telegram remote control with approval prompts for risky actions
-- 🧠 Persistent memory via SQLite
+- 🧠 Pure-Obsidian Markdown 2-way persistent memory (`D:/HERMES/AriaVault`)
+- 📋 Personal Assistant: Todos (`Todos.md`), Reminders (`Reminders.md`), Quick Notes (`Notes/`)
 - 🖥️ PC automation: apps, browser, volume, files, screenshots
 - 🔔 Memory triggers (reminders fired on keyword match)

@@ -1406,32 +1406,127 @@ def execute_tool(intent: dict) -> str:
         elif action in ("stop_voice_assistant", "kill_voice_assistant", "close_voice_assistant"):
             return stop_voice_assistant()
 
-        # ── Obsidian Integration ───────────────────────────────────────────────
+        # ── Personal Assistant: Todos Management ──────────────────────────────
+        elif action in ("add_todo", "create_todo"):
+            import memory_store as om
+            task = (command or file_content or intent.get("summary") or "").strip()
+            return om.add_todo(task)
+
+        elif action in ("list_todos", "show_todos", "get_todos"):
+            import memory_store as om
+            todos = om.get_todos("all")
+            if not todos:
+                return "📋 **Your Obsidian Todo list is currently empty!**\nSay *'add [task] to my todo list'* to add one."
+            pending = [t for t in todos if not t["completed"]]
+            done = [t for t in todos if t["completed"]]
+            lines = ["📋 **Your Obsidian Todo List:**\n"]
+            if pending:
+                lines.append(f"⏳ **Pending ({len(pending)}):**")
+                for t in pending:
+                    lines.append(f"• `- [ ]` {t['task']}")
+            else:
+                lines.append("🎉 *No pending tasks! All caught up.*")
+            if done:
+                lines.append(f"\n✅ **Completed ({len(done)}):**")
+                for t in done[:5]:
+                    lines.append(f"• `- [x]` {t['task']}")
+                if len(done) > 5:
+                    lines.append(f"• ... and {len(done)-5} more in [[Todos]]")
+            return "\n".join(lines)
+
+        elif action in ("complete_todo", "done_todo"):
+            import memory_store as om
+            task = (command or file_content or intent.get("summary") or "").strip()
+            return om.complete_todo(task)
+
+        elif action in ("remove_todo", "delete_todo"):
+            import memory_store as om
+            task = (command or file_content or intent.get("summary") or "").strip()
+            return om.remove_todo(task)
+
+        # ── Personal Assistant: Reminders & Schedule ──────────────────────────
+        elif action in ("add_reminder", "set_reminder"):
+            import memory_store as om
+            text = (command or file_content or "").strip()
+            due = (folder_name or intent.get("summary") or "").strip() or None
+            return om.add_reminder(text, due_time=due)
+
+        elif action in ("list_reminders", "show_reminders", "get_reminders"):
+            import memory_store as om
+            reminders = om.get_reminders(active_only=False)
+            if not reminders:
+                return "⏰ **No reminders configured in Obsidian!**\nSay *'remind me to [task]'* to set one."
+            active = [r for r in reminders if r["active"]]
+            dismissed = [r for r in reminders if not r["active"]]
+            lines = ["⏰ **Your Obsidian Reminders:**\n"]
+            if active:
+                lines.append(f"🔔 **Active ({len(active)}):**")
+                for r in active:
+                    lines.append(f"• {r['text']}")
+            else:
+                lines.append("🔕 *No active reminders right now.*")
+            if dismissed:
+                lines.append(f"\n🔕 **Past/Dismissed ({len(dismissed)}):**")
+                for r in dismissed[:3]:
+                    lines.append(f"• {r['text']}")
+            return "\n".join(lines)
+
+        elif action in ("dismiss_reminder", "cancel_reminder"):
+            import memory_store as om
+            q = (command or file_content or "").strip()
+            return om.dismiss_reminder(q)
+
+        # ── Personal Assistant: Notes & Profile ───────────────────────────────
+        elif action in ("save_note", "take_note", "create_note"):
+            import memory_store as om
+            title = (file_name or folder_name or "Quick Note").strip()
+            content = (file_content or command or intent.get("summary") or "").strip()
+            return om.save_note(title, content)
+
+        elif action in ("show_profile", "get_profile"):
+            import memory_store as om
+            facts = om.get_all_facts()
+            name = facts.get("user_name", "User")
+            mode = facts.get("active_model_mode", "CLOUD")
+            model = facts.get("active_llm_model", "gemini-2.5-flash")
+            vault = str(om.get_vault_path())
+            lines = [
+                f"👤 **Personal Assistant Profile (Obsidian):**\n",
+                f"• **Name:** <code>{name}</code>",
+                f"• **Active AI Engine:** <code>{mode}</code> (<code>{model}</code>)",
+                f"• **Obsidian Vault:** <code>{vault}</code>",
+                f"• **Database Engine:** <i>Pure Obsidian Markdown (SQLite removed)</i>",
+            ]
+            custom_facts = [f"• `{k}`: {v}" for k, v in facts.items() if k not in ("user_name", "active_model_mode", "active_llm_model") and not k.startswith("ag_")]
+            if custom_facts:
+                lines.append("\n<b>Known Facts:</b>")
+                lines.extend(custom_facts[:8])
+            return "\n".join(lines)
+
+        # ── Obsidian Vault Search & Notes ─────────────────────────────────────
         elif action in ("sync_obsidian", "export_obsidian", "connect_obsidian"):
-            try:
-                import obsidian_bridge
-                stats = obsidian_bridge.export_all_memory()
-                vault_dir = obsidian_bridge.get_vault_path()
-                return (
-                    "🌌 **Aria Memory Synced to Obsidian!**\n\n"
-                    f"• 👤 **Facts & Profile:** {stats['facts']} items\n"
-                    f"• 💬 **Conversations:** {stats['conversations']} messages exported\n"
-                    f"• ⚡ **Triggers:** {stats['triggers']} proactive triggers\n"
-                    f"• 🛡️ **Audit Logs:** {stats['audit_logs']} security records\n"
-                    f"• 🎯 **Agent Plans:** {stats['plans']} goals\n\n"
-                    f"📁 **Vault Location:** `{vault_dir}`\n"
-                    "Open Obsidian to view your graph and notes!"
-                )
-            except Exception as e:
-                return f"❌ Failed to sync to Obsidian: {e}"
+            import memory_store as om
+            facts = om.get_all_facts()
+            todos = om.get_todos("all")
+            reminders = om.get_reminders(active_only=False)
+            vault_dir = om.get_vault_path()
+            return (
+                "🌌 **Aria Obsidian Memory Vault Active!**\n\n"
+                f"• 👤 **Facts & Profile:** {len(facts)} items\n"
+                f"• 📋 **Todo Tasks:** {len(todos)} tasks\n"
+                f"• ⏰ **Reminders:** {len(reminders)} reminders\n"
+                f"• 💾 **Storage Engine:** <i>Pure Markdown (SQLite removed)</i>\n\n"
+                f"📁 **Vault Location:** `{vault_dir}`\n"
+                "Everything you say or change is saved directly into Obsidian!"
+            )
 
         elif action == "search_obsidian":
             try:
-                import obsidian_bridge
+                import memory_store as om
                 q = (command or file_content or intent.get("summary") or "").strip()
                 if not q:
                     return "⚠️ Please specify what to search for in Obsidian."
-                matches = obsidian_bridge.search_vault(q, max_results=5)
+                matches = om.search_vault(q, max_results=5)
                 if not matches:
                     return f"🔍 No notes found in Obsidian matching **'{q}'**."
                 lines = [f"🔍 **Found {len(matches)} Obsidian note(s) matching '{q}':**\n"]
@@ -1443,11 +1538,11 @@ def execute_tool(intent: dict) -> str:
 
         elif action == "read_obsidian_note":
             try:
-                import obsidian_bridge
+                import memory_store as om
                 note_name = (command or file_name or "").strip()
                 if not note_name:
                     return "⚠️ Please specify which note to read from Obsidian."
-                content = obsidian_bridge.read_note(note_name)
+                content = om.read_note(note_name)
                 if not content:
                     return f"📂 Note **'{note_name}'** not found in Obsidian vault."
                 if len(content) > 3000:

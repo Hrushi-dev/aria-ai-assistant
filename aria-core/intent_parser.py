@@ -80,7 +80,7 @@ create_file_folder | delete_folder | delete_file | close_window | open_app | min
 play_youtube | play_spotify | web_search | take_screenshot | list_files |
 list_windows | set_memory_trigger | volume_control | create_zip |
 convert_to_pdf | gui_click | gui_type | whatsapp_message | media_control |
-dev_task | cert_workflow | list_projects | janitor_clean | start_voice_assistant | stop_voice_assistant | sync_obsidian | search_obsidian | read_obsidian_note
+dev_task | cert_workflow | list_projects | janitor_clean | start_voice_assistant | stop_voice_assistant | sync_obsidian | search_obsidian | read_obsidian_note | add_todo | list_todos | complete_todo | remove_todo | add_reminder | list_reminders | dismiss_reminder | save_note | show_profile
 
 
 OUTPUT FORMAT — return ONLY valid JSON, no markdown wrapper, no extra text:
@@ -426,11 +426,172 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
             }]
         }
 
+    # ── Fast-Path: Personal Assistant - Profile & Identity ───────────────
+    profile_phrases = [
+        "who am i", "whoami", "my profile", "show profile", "get profile",
+        "what do you know about me", "tell me about myself", "my preferences", "what is my profile"
+    ]
+    if lower in profile_phrases or lower.rstrip("?").strip() in profile_phrases:
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "show_profile",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "Show Obsidian user profile & facts",
+                "risk_level": "LOW"
+            }]
+        }
+
+    # ── Fast-Path: Personal Assistant - Todos / Tasks ────────────────────
+    todo_list_phrases = [
+        "todo", "todos", "my todos", "todo list", "my todo list", "show todos", "show todo",
+        "show todo list", "list todos", "list todo", "get todos", "view todos", "what are my todos",
+        "what's on my todo list", "whats on my todo list", "my tasks", "task list", "my task list",
+        "show tasks", "list tasks", "show my tasks", "get tasks", "view tasks", "all todos", "all tasks"
+    ]
+    if lower in todo_list_phrases or lower.rstrip("?").strip() in todo_list_phrases or re.match(r"^(?:show|list|get|view|what(?:'?s|\s+is)\s+on)\s+(?:all\s+)?(?:my\s+)?(?:todos?|to-dos?|tasks?)(?:\s+list)?\??$", lower):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "list_todos",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "List Obsidian todo tasks",
+                "risk_level": "LOW"
+            }]
+        }
+
+    m_done = re.match(r"^(?:mark\s+(?:task\s+|todo\s+)?(.+?)\s+as\s+(?:done|completed)|mark\s+(?:as\s+)?(?:done|completed)\s+(.+)|complete\s+(?:task\s+|todo\s+)?(.+)|finish\s+(?:task\s+|todo\s+)?(.+)|done\s+(.+))$", lower)
+    if m_done:
+        task_text = (m_done.group(1) or m_done.group(2) or m_done.group(3) or m_done.group(4) or m_done.group(5) or "").strip()
+        if task_text and not any(k in task_text for k in ["file", "window", "folder"]):
+            return {
+                "is_chat": False, "chat_reply": None,
+                "tasks": [{
+                    "action": "complete_todo",
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "command": task_text,
+                    "summary": f"Complete todo: {task_text}",
+                    "risk_level": "LOW"
+                }]
+            }
+
+    m_rem_todo = re.match(r"^(?:remove|delete)\s+(?:task\s+|todo\s+)?(.+?)(?:\s+from\s+(?:my\s+)?(?:todos?|to-dos?|tasks?)(?:\s+list)?)?$", lower)
+    if m_rem_todo and not any(k in lower for k in ["folder", "file", "dir", "directory", "reminder", "window"]):
+        task_text = m_rem_todo.group(1).strip()
+        if task_text:
+            return {
+                "is_chat": False, "chat_reply": None,
+                "tasks": [{
+                    "action": "remove_todo",
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "command": task_text,
+                    "summary": f"Remove todo: {task_text}",
+                    "risk_level": "LOW"
+                }]
+            }
+
+    m_add_todo1 = re.match(r"^(?:add|put)\s+(.+?)\s+(?:to|in|on)\s+(?:my\s+)?(?:todos?|to-dos?|tasks?)(?:\s+list)?$", lower)
+    m_add_todo2 = re.match(r"^(?:add\s+to\s+(?:my\s+)?(?:todos?|to-dos?|tasks?)(?:\s+list)?)\s*[:\-]?\s*(.+)$", lower)
+    m_add_todo3 = re.match(r"^(?:add\s+todo|add\s+to\s+do|add\s+task|todo:?|task:?)\s*[:\-]?\s*(.+)$", lower)
+    m_add = m_add_todo1 or m_add_todo2 or m_add_todo3
+    if m_add and not any(k in lower for k in ["reminder", "note"]):
+        task_text = m_add.group(1).strip()
+        if task_text:
+            return {
+                "is_chat": False, "chat_reply": None,
+                "tasks": [{
+                    "action": "add_todo",
+                    "target_path": None, "folder_name": None, "file_name": None,
+                    "file_content": None, "command": task_text,
+                    "summary": f"Add todo: {task_text}",
+                    "risk_level": "LOW"
+                }]
+            }
+
+    # ── Fast-Path: Personal Assistant - Reminders ────────────────────────
+    reminder_list_phrases = [
+        "reminders", "my reminders", "show reminders", "show my reminders", "list reminders",
+        "list my reminders", "what are my reminders", "get reminders", "view reminders",
+        "show active reminders", "active reminders"
+    ]
+    if lower in reminder_list_phrases or lower.rstrip("?").strip() in reminder_list_phrases or re.match(r"^(?:show|list|get|view|what\s+are)\s+(?:all\s+)?(?:my\s+)?reminders\??$", lower):
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "list_reminders",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": None,
+                "summary": "List Obsidian reminders",
+                "risk_level": "LOW"
+            }]
+        }
+
+    m_dismiss_rem = re.match(r"^(?:dismiss|clear|remove|delete|cancel)\s+reminder\s+(.+)$", lower)
+    if m_dismiss_rem:
+        q = m_dismiss_rem.group(1).strip()
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "dismiss_reminder",
+                "target_path": None, "folder_name": None, "file_name": None,
+                "file_content": None, "command": q,
+                "summary": f"Dismiss reminder: {q}",
+                "risk_level": "LOW"
+            }]
+        }
+
+    m_add_rem = re.match(r"^(?:remind\s+me\s+to|remind\s+me|set\s+a?\s*reminder\s+(?:to|for)|add\s+reminder)\s+(.+)$", lower)
+    if m_add_rem:
+        rem_full = m_add_rem.group(1).strip()
+        time_split = re.search(r"\s+(at|on|by|in|tomorrow|tonight)\s+(.+)$", rem_full, re.IGNORECASE)
+        due_str = None
+        rem_body = rem_full
+        if time_split:
+            due_str = time_split.group(0).strip()
+            rem_body = rem_full[:time_split.start()].strip()
+            if not rem_body:
+                rem_body = rem_full
+                due_str = None
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "add_reminder",
+                "target_path": None, "folder_name": due_str, "file_name": None,
+                "file_content": None, "command": rem_body or rem_full,
+                "summary": f"Add reminder: {rem_full}",
+                "risk_level": "LOW"
+            }]
+        }
+
+    # ── Fast-Path: Personal Assistant - Quick Notes ──────────────────────
+    m_take_note = re.match(r"^(?:take\s+(?:a\s+)?note|save\s+note|new\s+note|note\s+down|write\s+down)\s*[:\-]?\s*(.+)$", lower)
+    if m_take_note and not any(k in lower for k in ["file", "code", "script"]):
+        note_text = m_take_note.group(1).strip()
+        title = "Quick Note"
+        content = note_text
+        if ":" in note_text and len(note_text.split(":", 1)[0]) < 30:
+            parts = note_text.split(":", 1)
+            title = parts[0].strip().title()
+            content = parts[1].strip()
+        return {
+            "is_chat": False, "chat_reply": None,
+            "tasks": [{
+                "action": "save_note",
+                "target_path": None, "folder_name": None, "file_name": title,
+                "file_content": content, "command": None,
+                "summary": f"Save note '{title}' to Obsidian",
+                "risk_level": "LOW"
+            }]
+        }
+
     # ── Fast-Path: Obsidian Sync & Vault ──────────────────────────────────
     obsidian_sync_phrases = [
         "sync obsidian", "sync to obsidian", "export to obsidian", "export memory to obsidian",
         "transfer memory to obsidian", "transfer memory", "connect obsidian", "connect the database with obsidian",
-        "connect database with obsidian", "connect db with obsidian", "backup to obsidian", "update obsidian vault"
+        "connect database with obsidian", "connect db with obsidian", "backup to obsidian", "update obsidian vault",
+        "obsidian status", "vault status"
     ]
     if any(p in lower for p in obsidian_sync_phrases):
         return {
@@ -439,7 +600,7 @@ async def parse_user_command(user_text: str, user_id: int = None, autonomy_mode:
                 "action": "sync_obsidian",
                 "target_path": None, "folder_name": None, "file_name": None,
                 "file_content": None, "command": None,
-                "summary": "Sync Aria SQLite memory into Obsidian Vault",
+                "summary": "View Obsidian Vault memory status",
                 "risk_level": "LOW"
             }]
         }
