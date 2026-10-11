@@ -312,27 +312,61 @@ async def terminate_orchestrator(update: Update, context: ContextTypes.DEFAULT_T
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER_ID:
         return
+
+    # Trigger audio + visual sign on laptop in parallel
+    diag_stats = {}
+    screenshot_path = None
+    try:
+        import remote_alert
+        diag_stats, screenshot_path = remote_alert.trigger_laptop_startup_alert()
+    except Exception as e:
+        logging.warning(f"[Remote Startup] Laptop alert exception: {e}")
+
     current_mode = memory.get_fact("active_model_mode") or "CLOUD"
     active_model = memory.get_fact("active_llm_model") or "gemini-2.5-flash"
     user_name    = memory.get_fact("user_name") or "there"
-    await update.message.reply_text(
-        f"⚡ <b>Aria Core is Online.</b>\n"
-        f"• Hello, <b>{user_name}</b>!\n"
-        f"• Active Engine: <code>{current_mode}</code>\n"
-        f"• Active Model: <code>{active_model}</code>\n"
-        f"• Memory &amp; Sandbox: <i>Active</i>\n\n"
-        f"<b>Hermes Assistant Controls:</b>\n"
-        f"• <code>/voice</code> — Launch desktop voice assistant (talk to Aria)\n"
-        f"• <code>/stopvoice</code> — Stop desktop voice assistant\n"
-        f"• <code>/status</code> — System, disk &amp; engine health\n"
+
+    host = diag_stats.get("hostname", "Laptop")
+    battery = diag_stats.get("battery", "100%")
+    power = diag_stats.get("power_plugged", "Plugged In ⚡")
+    ip = diag_stats.get("ip_address", "Local")
+    ram = diag_stats.get("ram_percent", "N/A")
+    cpu = diag_stats.get("cpu_percent", "N/A")
+
+    welcome_msg = (
+        f"🚀 <b>ARIA FULL SYSTEM ONLINE!</b>\n"
+        f"<code>{'═'*32}</code>\n"
+        f"• 👤 <b>User:</b> <code>{user_name}</code>\n"
+        f"• 💻 <b>Host:</b> <code>{host}</code> (Windows)\n"
+        f"• 🔋 <b>Battery:</b> <code>{battery} ({power})</code>\n"
+        f"• 📶 <b>IP:</b> <code>{ip}</code> | <b>RAM:</b> <code>{ram}</code> | <b>CPU:</b> <code>{cpu}</code>\n"
+        f"• 🧠 <b>Engine:</b> <code>{current_mode}</code> (<code>{active_model}</code>)\n"
+        f"• 📁 <b>Obsidian Vault:</b> <i>Connected & Synced</i>\n"
+        f"• 🎙️ <b>Telegram Voice:</b> <i>Active (hold mic to talk)</i>\n\n"
+        f"🔊 <i>Laptop Alert: Voice spoken on laptop speakers & toast shown on screen.</i>\n\n"
+        f"<b>Mobile Remote Controls:</b>\n"
+        f"• 🎤 <b>Voice Note</b> — hold mic and speak any task\n"
+        f"• <code>/voice</code> — launch laptop desktop voice loop\n"
+        f"• <code>/status</code> — live hardware & disk health\n"
         f"• <code>/clean</code> — ARIA System Janitor disk cleaner\n"
-        f"• <code>/switch</code> — Switch between cloud, local, groq, openrouter\n"
-        f"• <code>/model &lt;name&gt;</code> — Set active model name\n"
-        f"• <code>/debug &lt;text&gt;</code> — Test intent parser AST &amp; debug output\n"
-        f"• <code>/logs</code> — Tail recent background logs\n"
-        f"• <code>/ping</code> — Liveness pong test",
-        parse_mode=ParseMode.HTML
+        f"• <code>/switch</code> — toggle cloud / local / openrouter\n"
+        f"• <code>/ping</code> — test live connection"
     )
+
+    await update.message.reply_text(welcome_msg, parse_mode=ParseMode.HTML)
+
+    # Send live screen confirmation
+    if screenshot_path and os.path.exists(screenshot_path):
+        try:
+            with open(screenshot_path, "rb") as sf:
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=sf,
+                    caption=f"📸 <b>Live Laptop Screen</b> — <code>{host}</code> is awake and ready.",
+                    parse_mode=ParseMode.HTML
+                )
+        except Exception as e:
+            logging.warning(f"[Remote Startup] Failed to send startup screenshot: {e}")
 
 async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER_ID:
@@ -361,6 +395,51 @@ async def set_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory.set_fact("active_llm_model", new_model)
     await update.message.reply_text(f"✅ Model changed to: {new_model}")
 
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice notes sent from mobile on Telegram."""
+    if update.effective_user.id != ALLOWED_USER_ID:
+        return
+
+    voice = update.message.voice
+    if not voice:
+        return
+
+    status_msg = await update.message.reply_text("🎧 <i>Listening to your voice note...</i>", parse_mode=ParseMode.HTML)
+
+    try:
+        # Download voice file
+        file = await context.bot.get_file(voice.file_id)
+        sandbox_dir = Path(__file__).parent.parent / "aria-sandbox"
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        voice_path = sandbox_dir / f"tg_voice_{voice.file_unique_id}.ogg"
+
+        await file.download_to_drive(str(voice_path))
+
+        # Transcribe
+        import voice_transcriber
+        text = voice_transcriber.transcribe_audio_file(str(voice_path))
+
+        # Cleanup voice file
+        try:
+            voice_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        if not text:
+            await status_msg.edit_text("🔇 Couldn't clearly detect speech in that voice note. Try speaking closer to the phone microphone.")
+            return
+
+        # Update status message with what was heard
+        await status_msg.edit_text(f"🎤 <i>Heard:</i> <b>\"{html.escape(text)}\"</b>\n⏳ <i>Executing...</i>", parse_mode=ParseMode.HTML)
+
+        # Inject transcribed text as update.message.text and process through existing handle_message
+        update.message.text = text
+        await handle_message(update, context)
+
+    except Exception as e:
+        logging.error(f"[Daemon] Error handling voice message: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Could not process voice note: {e}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
@@ -369,6 +448,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_text = update.message.text.strip()
     lower_text = user_text.lower()
+    
+    # ── Mobile Remote Fireup / Wakeup fast path ───────────────────────────
+    if lower_text in ("wake up", "wake", "start aria", "fireup", "fire up", "fire up aria", "fireup aria", "start system", "online"):
+        await start(update, context)
+        return
     
     # Hard-route coding tasks directly to the IDE orchestrator
     # Only triggers when there's clear coding/building intent, not casual mentions
@@ -1262,7 +1346,7 @@ if __name__ == "__main__":
         .pool_timeout(60)
         .build()
     )
-    app.add_handler(CommandHandler("start",     start))
+    app.add_handler(CommandHandler(["start", "wake", "fireup", "remote", "online"], start))
     app.add_handler(CommandHandler("model",     set_model))
     app.add_handler(CommandHandler(["voice", "talk"], cmd_voice))
     app.add_handler(CommandHandler(["stopvoice"], cmd_stop_voice))
@@ -1273,6 +1357,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("switch",    cmd_switch))
     app.add_handler(CommandHandler("ping",      cmd_ping))
     app.add_handler(CommandHandler(["clean", "janitor"], cmd_clean))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_error_handler(error_handler)
